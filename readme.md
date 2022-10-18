@@ -44,11 +44,11 @@ How to configure
 
 High Precision:
 ```c#
-HWHash.HighPrecision = "true";
+HWHash.HighPrecision = true;
 ```
 High Priority:
 ```c#
-HWHash.HighPriority = "true";
+HWHash.HighPriority = true;
 ```
 
 Delay:
