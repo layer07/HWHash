@@ -1,6 +1,7 @@
 # HWHash
 ## _Grab all HWInfo realtime sensor information directly to a Dictionary._
 [![N|Solid](https://cdn.discordapp.com/attachments/974494135945945148/1032045336841175110/WiredBuild.png)](https://divinelain.com)
+
 [![GLWTPL](https://img.shields.io/badge/GLWT-Public_License-red.svg)](https://github.com/me-shaon/GLWTPL)
 
 
