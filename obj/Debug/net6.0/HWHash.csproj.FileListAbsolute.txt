@@ -1,0 +1,12 @@
+C:\DoNotLose\HWHash_\HWHash\bin\Debug\net6.0\HWHash.deps.json
+C:\DoNotLose\HWHash_\HWHash\bin\Debug\net6.0\HWHash.dll
+C:\DoNotLose\HWHash_\HWHash\bin\Debug\net6.0\HWHash.pdb
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.csproj.AssemblyReference.cache
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.GeneratedMSBuildEditorConfig.editorconfig
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.AssemblyInfoInputs.cache
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.AssemblyInfo.cs
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.csproj.CoreCompileInputs.cache
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.dll
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\refint\HWHash.dll
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\HWHash.pdb
+C:\DoNotLose\HWHash_\HWHash\obj\Debug\net6.0\ref\HWHash.dll
