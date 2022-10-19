@@ -8,21 +8,21 @@ using System.Timers;
 
 public class HWHash
 {
-    const string HWiNFO_SHARED_MEM_FILE_NAME = "Global\\HWiNFO_SENS_SM2";
-    const int HWiNFO_SENSORS_STRING_LEN = 128;
-    const int HWiNFO_UNIT_STRING_LEN = 16;
-    private static MemoryMappedFile? mmf;
-    private static MemoryMappedViewAccessor? accessor;
-    private static _HWiNFO_SHARED_MEM HWiNFOMemory;
+    const string SHARED_MEM_PATH = "Global\\HWiNFO_SENS_SM2";
+    const int SENSOR_STRING_LEN = 128;
+    const int READING_STRING_LEN = 16;
+    private static MemoryMappedFile? MEM_MAP;
+    private static MemoryMappedViewAccessor? MEM_ACC;
+    private static HWINFO_MEM HWINFO_MEMREGION;
 
     private static readonly Stopwatch SW = Stopwatch.StartNew();
-    private static Diagnostics SelfData = new Diagnostics();
-    
+    private static Diagnostics SelfData;
+
     private static int IndexOrder = 0;
 
-    private static System.Timers.Timer aTimer = new System.Timers.Timer(1000);
+    private static System.Timers.Timer aTimer = new(1000);
 
-    private static Dictionary<uint, HWINFO_HEADER> HEADER_DICT = new Dictionary<uint, HWINFO_HEADER>();
+    private static Dictionary<uint, HWHASH_HEADER> HEADER_DICT = new Dictionary<uint, HWHASH_HEADER>();
     private static ConcurrentDictionary<ulong, HWINFO_HASH> SENSORHASH = new ConcurrentDictionary<ulong, HWINFO_HASH>();
     private static Thread? CoreThread;
     
@@ -57,8 +57,7 @@ public class HWHash
     public static bool Launch()
     {        
         ReadMem();
-        BuildHeaders();
-        //Thread(() => DivineMemLaunch()).Start();
+        BuildHeaders();        
 
         CoreThread = new Thread(TimedStart);
 
@@ -86,8 +85,7 @@ public class HWHash
     }
 
     private static async void PollSensorData(object source, ElapsedEventArgs e)
-    {
-        //Console.Out.WriteLineAsync(SW.ElapsedMilliseconds.ToString());
+    {        
         MiniBenchmark(0);
         ReadSensors();
         MiniBenchmark(1);
@@ -97,56 +95,50 @@ public class HWHash
 
     private static void ReadMem()
     {
-        HWiNFOMemory = new _HWiNFO_SHARED_MEM();
+        HWINFO_MEMREGION = new HWINFO_MEM();
         try
         {
-            mmf = MemoryMappedFile.OpenExisting(HWiNFO_SHARED_MEM_FILE_NAME, MemoryMappedFileRights.Read);
-            accessor = mmf.CreateViewAccessor(0L, Marshal.SizeOf(typeof(_HWiNFO_SHARED_MEM)), MemoryMappedFileAccess.Read);
-            accessor.Read(0L, out HWiNFOMemory);
+            MEM_MAP = MemoryMappedFile.OpenExisting(SHARED_MEM_PATH, MemoryMappedFileRights.Read);
+            MEM_ACC = MEM_MAP.CreateViewAccessor(0L, Marshal.SizeOf(typeof(HWINFO_MEM)), MemoryMappedFileAccess.Read);
+            MEM_ACC.Read(0L, out HWINFO_MEMREGION);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            throw new InvalidOperationException("Cannot read HWINFO Shared Memory. Make sure that HWInfo is running and that you have admin privileges");
+            throw new InvalidOperationException("Cannot read HWINFO Shared Memory. Make sure that HWInfo is running and that you have admin privileges.");
         }
     }
 
     private static void BuildHeaders()
     {
 
-        for (uint index = 0; index < HWiNFOMemory.dwNumSensorElements; ++index)
+        for (uint index = 0; index < HWINFO_MEMREGION.SS_SensorElements; ++index)
         {
 
-            using (MemoryMappedViewStream viewStream = mmf.CreateViewStream(HWiNFOMemory.dwOffsetOfSensorSection + index * HWiNFOMemory.dwSizeOfSensorElement, HWiNFOMemory.dwSizeOfSensorElement, MemoryMappedFileAccess.Read))
+            using (MemoryMappedViewStream viewStream = MEM_MAP.CreateViewStream(HWINFO_MEMREGION.SS_OFFSET + index * HWINFO_MEMREGION.SS_SIZE, HWINFO_MEMREGION.SS_SIZE, MemoryMappedFileAccess.Read))
             {
-                byte[] buffer = new byte[(int)HWiNFOMemory.dwSizeOfSensorElement];
-                viewStream.Read(buffer, 0, (int)HWiNFOMemory.dwSizeOfSensorElement);
+                byte[] buffer = new byte[(int)HWINFO_MEMREGION.SS_SIZE];
+                viewStream.Read(buffer, 0, (int)HWINFO_MEMREGION.SS_SIZE);
                 string hex = BitConverter.ToString(buffer).Replace("-", "");
                 string str = Encoding.ASCII.GetString(buffer);
                 GCHandle gcHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-                HWINFO_HEADER structure = (HWINFO_HEADER)Marshal.PtrToStructure(gcHandle.AddrOfPinnedObject(), typeof(HWINFO_HEADER));
-                int d = 0;
-                //global::System.Console.WriteLine("{0} {1} -> {2}", structure.ID, structure.Instance, structure.NameDefault);
-                //global::System.Console.WriteLine(structure.NameDefault);
-
+                HWHASH_HEADER structure = (HWHASH_HEADER)Marshal.PtrToStructure(gcHandle.AddrOfPinnedObject(), typeof(HWHASH_HEADER));
                 HEADER_DICT.Add(index, structure);
             }
         }
-
-        SelfData.TotalCategories = HWiNFOMemory.dwNumSensorElements;
-        //Console.ReadKey();
+        SelfData.TotalCategories = HWINFO_MEMREGION.SS_SensorElements;
     }
 
     private static void ReadSensors()
     {
-        SelfData.TotalEntries = HWiNFOMemory.dwNumReadingElements;
-        for (uint index = 0; index < HWiNFOMemory.dwNumReadingElements; ++index)
+        SelfData.TotalEntries = HWINFO_MEMREGION.TOTAL_ReadingElements;
+        for (uint index = 0; index < HWINFO_MEMREGION.TOTAL_ReadingElements; ++index)
         {
-            using (MemoryMappedViewStream viewStream = mmf.CreateViewStream(HWiNFOMemory.dwOffsetOfReadingSection + index * HWiNFOMemory.dwSizeOfReadingElement, HWiNFOMemory.dwSizeOfReadingElement, MemoryMappedFileAccess.Read))
+            using (MemoryMappedViewStream viewStream = MEM_MAP.CreateViewStream(HWINFO_MEMREGION.OFFSET_Reading + index * HWINFO_MEMREGION.SIZE_Reading, HWINFO_MEMREGION.SIZE_Reading, MemoryMappedFileAccess.Read))
             {
-                byte[] buffer = new byte[(int)HWiNFOMemory.dwSizeOfReadingElement];
-                viewStream.Read(buffer, 0, (int)HWiNFOMemory.dwSizeOfReadingElement);
+                byte[] buffer = new byte[(int)HWINFO_MEMREGION.SIZE_Reading];
+                viewStream.Read(buffer, 0, (int)HWINFO_MEMREGION.SIZE_Reading);
                 GCHandle gcHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-                _HWiNFO_ELEMENT structure = (_HWiNFO_ELEMENT)Marshal.PtrToStructure(gcHandle.AddrOfPinnedObject(), typeof(_HWiNFO_ELEMENT));
+                HWHASH_ELEMENT structure = (HWHASH_ELEMENT)Marshal.PtrToStructure(gcHandle.AddrOfPinnedObject(), typeof(HWHASH_ELEMENT));
                 FormatSensor(structure);
                 gcHandle.Free();
             }
@@ -154,30 +146,32 @@ public class HWHash
         }
     }
 
-    private static void FormatSensor(_HWiNFO_ELEMENT READING)
+    private static void FormatSensor(HWHASH_ELEMENT READING)
     {
-        ulong UNIQUE_ID = concat(READING.dwSensorID, READING.dwSensorIndex);
+        ulong UNIQUE_ID = FastConcat(READING.ID, READING.Index);
         bool FirstTest = SENSORHASH.ContainsKey(UNIQUE_ID);
         if (FirstTest == false)
         {
-            HWINFO_HASH curr = new HWINFO_HASH();
-            curr.ReadingType = _PrettyType(READING.tReading);
-            curr.SensorIndex = READING.dwSensorIndex;
-            curr.SensorID = READING.dwSensorID;
-            curr.UniqueID = UNIQUE_ID;
-            curr.NameDefault = READING.szLabelOrig;
-            curr.NameCustom = READING.szLabelUser;
-            curr.Unit = READING.szUnit;
-            curr.ValueNow = READING.Value;
-            curr.ValueMin = READING.ValueMin;
-            curr.ValueMax = READING.ValueMax;
-            curr.ValueAvg = READING.ValueAvg;
-            curr.ParentNameDefault = HEADER_DICT[READING.dwSensorIndex].NameDefault;
-            curr.ParentNameCustom = HEADER_DICT[READING.dwSensorIndex].NameCustom;
-            curr.ParentID = HEADER_DICT[READING.dwSensorIndex].ID;
-            curr.ParentInstance = HEADER_DICT[READING.dwSensorIndex].Instance;
-            curr.ParentUniqueID = concat(HEADER_DICT[READING.dwSensorIndex].ID, HEADER_DICT[READING.dwSensorIndex].Instance);
-            curr.IndexOrder = IndexOrder++;
+            HWINFO_HASH curr = new()
+            {
+                ReadingType = TypeToString(READING.SENSOR_TYPE),
+                SensorIndex = READING.Index,
+                SensorID = READING.ID,
+                UniqueID = UNIQUE_ID,
+                NameDefault = READING.NameDefault,
+                NameCustom = READING.NameCustom,
+                Unit = READING.Unit,
+                ValueNow = READING.Value,
+                ValueMin = READING.ValueMin,
+                ValueMax = READING.ValueMax,
+                ValueAvg = READING.ValueAvg,
+                ParentNameDefault = HEADER_DICT[READING.Index].NameDefault,
+                ParentNameCustom = HEADER_DICT[READING.Index].NameCustom,
+                ParentID = HEADER_DICT[READING.Index].ID,
+                ParentInstance = HEADER_DICT[READING.Index].Instance,
+                ParentUniqueID = FastConcat(HEADER_DICT[READING.Index].ID, HEADER_DICT[READING.Index].Instance),
+                IndexOrder = IndexOrder++
+            };
             SENSORHASH.TryAdd(UNIQUE_ID, curr);
         }
         else
@@ -191,7 +185,7 @@ public class HWHash
         //curr.ReadingType = Enum.Parse()
     }
 
-    private static string _PrettyType(SENSOR_READING_TYPE IN)
+    private static string TypeToString(SENSOR_READING_TYPE IN)
     {
         string OUT = "Unknown";
         switch (IN)
@@ -276,17 +270,17 @@ public class HWHash
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct _HWiNFO_ELEMENT
+    private struct HWHASH_ELEMENT
     {
-        public SENSOR_READING_TYPE tReading;
-        public uint dwSensorIndex;
-        public uint dwSensorID;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
-        public string szLabelOrig;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
-        public string szLabelUser;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_UNIT_STRING_LEN)]
-        public string szUnit;
+        public SENSOR_READING_TYPE SENSOR_TYPE;
+        public uint Index;
+        public uint ID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
+        public string NameDefault;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
+        public string NameCustom;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = READING_STRING_LEN)]
+        public string Unit;
         public double Value;
         public double ValueMin;
         public double ValueMax;
@@ -294,41 +288,41 @@ public class HWHash
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct HWINFO_HEADER
+    private struct HWHASH_HEADER
     {
         public uint ID;
         public uint Instance;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
         public string NameDefault;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
         public string NameCustom;
     }
 
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct _HWiNFO_SHARED_MEM
+    private struct HWINFO_MEM
     {
-        public uint dwSignature;
-        public uint dwVersion;
-        public uint dwRevision;
-        public long poll_time;
-        public uint dwOffsetOfSensorSection;
-        public uint dwSizeOfSensorElement;
-        public uint dwNumSensorElements;
-        public uint dwOffsetOfReadingSection;
-        public uint dwSizeOfReadingElement;
-        public uint dwNumReadingElements;
+        public uint Sig;
+        public uint Ver;
+        public uint Rev;
+        public long PollTime;
+        public uint SS_OFFSET;
+        public uint SS_SIZE;
+        public uint SS_SensorElements;
+        public uint OFFSET_Reading;
+        public uint SIZE_Reading;
+        public uint TOTAL_ReadingElements;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct _HWiNFO_SENSOR
+    private struct HWHASH_Sensor
     {
-        public uint dwSensorID;
-        public uint dwSensorInst;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
-        public string szSensorNameOrig;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = HWiNFO_SENSORS_STRING_LEN)]
-        public string szSensorNameUser;
+        public uint ID;
+        public uint Instance;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
+        public string NameDefault;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = SENSOR_STRING_LEN)]
+        public string NameCustom;
     }
 
 
@@ -345,7 +339,7 @@ public class HWHash
         SENSOR_TYPE_OTHER,
     }
 
-    private static ulong concat(uint a, uint b)
+    private static ulong FastConcat(uint a, uint b)
     {
         if (b < 10U) return 10UL * a + b;
         if (b < 100U) return 100UL * a + b;
@@ -365,14 +359,14 @@ public class HWHash
     {
         /// <summary>TimeBeginPeriod(). See the Windows API documentation for details.</summary>
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Interoperability", "CA1401:PInvokesShouldNotBeVisible"), System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Security", "CA2118:ReviewSuppressUnmanagedCodeSecurityUsage"), SuppressUnmanagedCodeSecurity]
+        [SuppressUnmanagedCodeSecurity]
         [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", SetLastError = true)]
 
         public static extern uint TimeBeginPeriod(uint uMilliseconds);
 
         /// <summary>TimeEndPeriod(). See the Windows API documentation for details.</summary>
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Interoperability", "CA1401:PInvokesShouldNotBeVisible"), System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Security", "CA2118:ReviewSuppressUnmanagedCodeSecurityUsage"), SuppressUnmanagedCodeSecurity]
+        [SuppressUnmanagedCodeSecurity]
         [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", SetLastError = true)]
 
         public static extern uint TimeEndPeriod(uint uMilliseconds);

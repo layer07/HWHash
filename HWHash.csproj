@@ -11,8 +11,29 @@
     <Description>HWHash is a static class that grabs HWInfo sensor information and saves it to a Dictionary so it can be easily read and upload to InfluxDB or any other application you may deem useful.</Description>
     <RepositoryType>git</RepositoryType>
     <PackageTags>hwhash,hwinfo,hwinfo dictionary,hwinfo shared memory, metrics, hardware metrics,</PackageTags>
-    <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <RepositoryUrl>https://github.com/layer07/HWHash</RepositoryUrl>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageIcon>HWLogo.png</PackageIcon>
+    <PackageProjectUrl>https://divinelain.com</PackageProjectUrl>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="C:\Users\Lain\Desktop\HWLogo.png">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="LICENSE">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Update="readme.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
 
 </Project>

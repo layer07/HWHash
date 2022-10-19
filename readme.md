@@ -1,6 +1,6 @@
 # HWHash
-## _Grab all HWInfo realtime sensor information directly to a Dictionary._
-[![N|Solid](https://cdn.discordapp.com/attachments/974494135945945148/1032045336841175110/WiredBuild.png)](https://divinelain.com)
+## _Grab all HWInfo realtime sensor information directly to a easily accessible Dictionary._
+[![N|Solid](https://i.imgur.com/EyqeszJ.png)](https://divinelain.com)
 
 [![GLWTPL](https://img.shields.io/badge/GLWT-Public_License-red.svg)](https://github.com/me-shaon/GLWTPL)
 
@@ -11,6 +11,7 @@ A tiny, singleton (static) class that reads HWInfo Shared Memory and packs it to
 - 🦄 Single file static class with no external dependencies.
 - 😲 Tiny footprint, no memory leaks and 0.01% CPU Usage.
 - ✨It simply works.
+
 ## Features
 
 - Unique ID for each sensor avoid duplicate name collision
