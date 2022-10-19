@@ -59,6 +59,14 @@ Delay:
 HWHash.SetDelay(500);
 ```
 
+Then -> Launch():
+```c#
+HWHash.HighPrecision = true;
+HWHash.HighPriority = true;
+HWHash.SetDelay(500);
+HWHash.Launch();
+```
+
 
 ### License
 This project is licensed under [GLWTPL](./LICENSE)
