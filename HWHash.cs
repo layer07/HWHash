@@ -16,7 +16,7 @@ public class HWHash
     private static HWINFO_MEM HWINFO_MEMREGION;
 
     private static readonly Stopwatch SW = Stopwatch.StartNew();
-    private static Diagnostics SelfData;
+    private static HWHashStats SelfData;
 
     private static int IndexOrder = 0;
 
@@ -86,9 +86,7 @@ public class HWHash
 
     private static async void PollSensorData(object source, ElapsedEventArgs e)
     {        
-        MiniBenchmark(0);
         ReadSensors();
-        MiniBenchmark(1);
     }
 
  
@@ -130,6 +128,7 @@ public class HWHash
 
     private static void ReadSensors()
     {
+        MiniBenchmark(0);
         SelfData.TotalEntries = HWINFO_MEMREGION.TOTAL_ReadingElements;
         for (uint index = 0; index < HWINFO_MEMREGION.TOTAL_ReadingElements; ++index)
         {
@@ -142,8 +141,8 @@ public class HWHash
                 FormatSensor(structure);
                 gcHandle.Free();
             }
-
         }
+        MiniBenchmark(1);
     }
 
     private static void FormatSensor(HWHASH_ELEMENT READING)
@@ -220,8 +219,11 @@ public class HWHash
 
         return OUT;
     }
-
-    public static Diagnostics GetSelfDiagnoticData()
+    /// <summary>
+    /// Get basic information about collection time (in milliseconds), total entries, etc...
+    /// </summary>
+    /// <returns>Returns a struct [HWHashStats] containing information about HWHash running thread.</returns>
+    public static HWHashStats GetHWHashStats()
     {       
         return SelfData;
     }
@@ -240,18 +242,22 @@ public class HWHash
         
     }
 
-    public static void GetOrderedList()
+    /// <summary>
+    /// Returns a list respecting the same order as HWInfo original user interface.
+    /// </summary>
+    public static List<HWINFO_HASH> GetOrderedList()
     {
-        var OrderedList = SENSORHASH.Values.ToList().OrderBy(x => x.IndexOrder);
+        List<HWINFO_HASH> OrderedList = SENSORHASH.Values.OrderBy(x => x.IndexOrder).ToList();
+        return OrderedList;
     }
-    public struct Diagnostics
+    public struct HWHashStats
     {
         public long CollectionTime { get; set; }
         public uint TotalCategories { get; set; }
         public uint TotalEntries { get; set; }
     }
 
-    private struct HWINFO_HASH
+    public struct HWINFO_HASH
     {
         public string ReadingType { get; set; }
         public uint SensorIndex { get; set; }
@@ -271,6 +277,16 @@ public class HWHash
         public ulong ParentUniqueID { get; set; }
         public int IndexOrder { get; set; }
     }
+
+    public struct HWINFO_HASH_MINI
+    {     
+        public ulong UniqueID { get; set; }
+        public string NameCustom { get; set; }
+        public string Unit { get; set; }
+        public double ValueNow { get; set; }        
+        public int IndexOrder { get; set; }
+    }
+
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct HWHASH_ELEMENT
