@@ -55,7 +55,7 @@ HWHash.HighPriority = true;
 
 Delay:
 ```c#
-//update the Dictionary twice a second
+//update the Dictionary every 500ms (twice per second)
 HWHash.SetDelay(500);
 ```
 
