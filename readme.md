@@ -1,5 +1,5 @@
 # HWHash
-## _Grab all HWInfo realtime sensor information directly to a easily accessible Dictionary._
+## _Grab all HWInfo realtime sensor information via shared memory and updates them directly to a easily accessible Dictionary._
 [![N|Solid](https://i.imgur.com/EyqeszJ.png)](https://divinelain.com)
 
 [![GLWTPL](https://img.shields.io/badge/GLWT-Public_License-red.svg)](https://github.com/me-shaon/GLWTPL)
