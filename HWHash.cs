@@ -181,8 +181,7 @@ public class HWHash
             THIS_ENTRY.ValueMin = READING.ValueMin;
             THIS_ENTRY.ValueMax = READING.ValueMax;
             THIS_ENTRY.ValueAvg = READING.ValueAvg;
-        }
-        //curr.ReadingType = Enum.Parse()
+        }        
     }
 
     private static string TypeToString(SENSOR_READING_TYPE IN)
@@ -241,6 +240,10 @@ public class HWHash
         
     }
 
+    public static void GetOrderedList()
+    {
+        var OrderedList = SENSORHASH.Values.ToList().OrderBy(x => x.IndexOrder);
+    }
     public struct Diagnostics
     {
         public long CollectionTime { get; set; }
