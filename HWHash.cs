@@ -4,6 +4,8 @@ using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Timers;
 
 public class HWHash
@@ -24,8 +26,9 @@ public class HWHash
 
     private static Dictionary<uint, HWHASH_HEADER> HEADER_DICT = new Dictionary<uint, HWHASH_HEADER>();
     private static ConcurrentDictionary<ulong, HWINFO_HASH> SENSORHASH = new ConcurrentDictionary<ulong, HWINFO_HASH>();
+    private static ConcurrentDictionary<ulong, HWINFO_HASH_MINI> SENSORHASH_MINI = new ConcurrentDictionary<ulong, HWINFO_HASH_MINI>();
     private static Thread? CoreThread;
-    
+
     /// <summary>
     /// If [true], the thread will run at a high priority to avoid being delayed by other tasks.
     /// </summary>
@@ -45,7 +48,7 @@ public class HWHash
     /// <returns>true if new delay is between the safe range, false otherwise.</returns>
     public static bool SetDelay(int delayms)
     {
-        if(delayms < 100 || delayms > 60000)
+        if (delayms < 100 || delayms > 60000)
         {
             return false;
         }
@@ -55,9 +58,9 @@ public class HWHash
 
 
     public static bool Launch()
-    {        
+    {
         ReadMem();
-        BuildHeaders();        
+        BuildHeaders();
 
         CoreThread = new Thread(TimedStart);
 
@@ -66,30 +69,30 @@ public class HWHash
             CoreThread.Priority = ThreadPriority.Highest;
         }
 
-        if(HighPrecision == true)
+        if (HighPrecision == true)
         {
-            WinApi.TimeBeginPeriod(1);
+            _ = WinApi.TimeBeginPeriod(1);
         }
 
         CoreThread.Start();
 
-      
+
 
         return true;
     }
 
     public static void TimedStart()
-    {       
-        aTimer.Elapsed += new ElapsedEventHandler(PollSensorData);        
+    {
+        aTimer.Elapsed += new ElapsedEventHandler(PollSensorData);
         aTimer.Enabled = true;
     }
 
     private static async void PollSensorData(object source, ElapsedEventArgs e)
-    {        
+    {
         ReadSensors();
     }
 
- 
+
 
     private static void ReadMem()
     {
@@ -151,7 +154,17 @@ public class HWHash
         bool FirstTest = SENSORHASH.ContainsKey(UNIQUE_ID);
         if (FirstTest == false)
         {
-            HWINFO_HASH curr = new()
+
+            HWINFO_HASH_MINI LastReading_Mini = new()
+            {
+                UniqueID = UNIQUE_ID,
+                NameCustom = READING.NameCustom,
+                Unit = READING.Unit,
+                ValueNow = READING.Value,
+                IndexOrder = IndexOrder
+            };
+
+            HWINFO_HASH LastReading = new()
             {
                 ReadingType = TypeToString(READING.SENSOR_TYPE),
                 SensorIndex = READING.Index,
@@ -171,7 +184,11 @@ public class HWHash
                 ParentUniqueID = FastConcat(HEADER_DICT[READING.Index].ID, HEADER_DICT[READING.Index].Instance),
                 IndexOrder = IndexOrder++
             };
-            SENSORHASH.TryAdd(UNIQUE_ID, curr);
+
+
+
+            SENSORHASH.TryAdd(UNIQUE_ID, LastReading);
+            SENSORHASH_MINI.TryAdd(UNIQUE_ID, LastReading_Mini);
         }
         else
         {
@@ -180,7 +197,10 @@ public class HWHash
             THIS_ENTRY.ValueMin = READING.ValueMin;
             THIS_ENTRY.ValueMax = READING.ValueMax;
             THIS_ENTRY.ValueAvg = READING.ValueAvg;
-        }        
+
+            HWINFO_HASH_MINI THIS_ENTRY_MINI = SENSORHASH_MINI[UNIQUE_ID];
+            THIS_ENTRY_MINI.ValueNow = READING.Value;
+        }
     }
 
     private static string TypeToString(SENSOR_READING_TYPE IN)
@@ -224,22 +244,22 @@ public class HWHash
     /// </summary>
     /// <returns>Returns a struct [HWHashStats] containing information about HWHash running thread.</returns>
     public static HWHashStats GetHWHashStats()
-    {       
+    {
         return SelfData;
     }
 
     private static void MiniBenchmark(int Mode)
     {
-        if(Mode == 0)
+        if (Mode == 0)
         {
             SW.Restart();
         }
 
-        if(Mode == 1)
+        if (Mode == 1)
         {
             SelfData.CollectionTime = SW.ElapsedMilliseconds;
         }
-        
+
     }
 
     /// <summary>
@@ -249,6 +269,49 @@ public class HWHash
     {
         List<HWINFO_HASH> OrderedList = SENSORHASH.Values.OrderBy(x => x.IndexOrder).ToList();
         return OrderedList;
+    }
+
+    /// <summary>
+    /// Returns a list respecting the same order as HWInfo original user interface, in a minified version.
+    /// </summary>
+    public static List<HWINFO_HASH_MINI> GetOrderedListMini()
+    {
+        List<HWINFO_HASH_MINI> OrderedList = SENSORHASH_MINI.Values.OrderBy(x => x.IndexOrder).ToList();
+        return OrderedList;
+    }
+    /// <summary>
+    /// Converts the Dictionary to a JSON string
+    /// </summary>
+    /// <param name="Order">If set to true, will return in the same order it is displayed on HWInfo UI</param>
+    /// <returns></returns>
+    public static string GetJsonString(bool Order = false)
+    {
+
+        if (Order == true)
+        {
+            return JsonSerializer.Serialize(SENSORHASH.Values.OrderBy(x => x.IndexOrder).ToList());
+        }
+        else
+        {
+            return JsonSerializer.Serialize(SENSORHASH);
+        }
+    }
+
+    /// <summary>
+    /// Converts the Dictionary to a JSON string (Mini version)
+    /// </summary>
+    /// <param name="Order">If set to true, will return in the same order it is displayed on HWInfo UI</param>
+    /// <returns></returns>
+    public static string GetJsonStringMini(bool Order = false)
+    {
+        if(Order == true)
+        {
+            return JsonSerializer.Serialize(SENSORHASH_MINI.Values.OrderBy(x => x.IndexOrder).ToList());
+        }
+        else
+        {
+            return JsonSerializer.Serialize(SENSORHASH_MINI);
+        }
     }
     public struct HWHashStats
     {
@@ -279,11 +342,12 @@ public class HWHash
     }
 
     public struct HWINFO_HASH_MINI
-    {     
+    {
         public ulong UniqueID { get; set; }
         public string NameCustom { get; set; }
         public string Unit { get; set; }
-        public double ValueNow { get; set; }        
+        public double ValueNow { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public int IndexOrder { get; set; }
     }
 
@@ -371,9 +435,8 @@ public class HWHash
         return 1000000000UL * a + b;
     }
 
+
    
-
-
     private static class WinApi
     {
         /// <summary>TimeBeginPeriod(). See the Windows API documentation for details.</summary>

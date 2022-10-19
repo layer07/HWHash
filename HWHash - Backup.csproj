@@ -18,6 +18,7 @@
     <PackageProjectUrl>https://divinelain.com</PackageProjectUrl>
     <GenerateDocumentationFile>False</GenerateDocumentationFile>
     <BaseOutputPath>A:\Github\HWBUILD</BaseOutputPath>
+    <BaseIntermediateOutputPath>A:\Github\HWBUILD\obj</BaseIntermediateOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
