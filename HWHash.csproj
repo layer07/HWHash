@@ -14,8 +14,9 @@
     <RepositoryUrl>https://github.com/layer07/HWHash</RepositoryUrl>
     <PackageReadmeFile>readme.md</PackageReadmeFile>
     <PackageIcon></PackageIcon>
-    <PackageProjectUrl>https://divinelain.com</PackageProjectUrl>
-    <GenerateDocumentationFile>False</GenerateDocumentationFile>    
+    <PackageProjectUrl>https://kernelriot.com</PackageProjectUrl>
+    <GenerateDocumentationFile>False</GenerateDocumentationFile>
+	<VersionPrefix>1.3.0</VersionPrefix>
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <FileVersion>1.1.0.0</FileVersion>
     <Copyright>Everyone but the Author</Copyright>
