@@ -1,4 +1,3 @@
-
 # HWHash
 ## _HWHash Collects HWiNFO's sensor information in realtime, via shared memory and writes them directly to a easily accessible Dictionary._
 [![N|Solid](https://i.imgur.com/EyqeszJ.png)](https://divinelain.com)
@@ -135,6 +134,38 @@ public record struct HWINFO_HASH_MINI
         public int IndexOrder { get; set; }
     }
 ```
+Relevant Sensor List
+---
+If you prefer to avoid manually searching for sensor IDs and wish to access a curated List<HWINFO_HASH> of relevant sensors directly, use this function.
+```c#
+	public static List<string> RelevantSensorsList { get; } = new List<string>
+	{
+		"Physical Memory Load",
+		"Physical Memory Used",
+		"P-core 0 VID",
+		"P-core 0 Clock",
+		"Ring/LLC Clock",
+		"Total CPU Usage",
+		"CPU Package",
+		"Core Max",
+		"CPU Package Power",
+		"Vcore",
+		"+12V",
+		"SPD Hub Temperature",
+		"GPU Temperature",
+		"GPU Memory Junction Temperature",
+		"GPU 8-pin #1 Input Voltage",
+		"GPU 8-pin #2 Input Voltage",
+		"GPU 8-pin #3 Input Voltage",
+		"GPU Power (Total)",
+		"GPU Core Load",
+		"GPU Memory Controller Load",
+		"Current DL rate",
+		"Current UP rate",
+		"Total Errors"
+	};
+
+```
 
 PowerShell Integration
 ---
@@ -242,6 +273,7 @@ To-do
 - [x] JSON export with no third party libraries
 - [x] Add Min, Max, Average
 - [x] Store previous reading value
+- [x] PowerShell Integration
 
 ### License
 This project is licensed under [GLWTPL](./LICENSE)
