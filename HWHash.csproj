@@ -1,0 +1,53 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+	<SignAssembly>True</SignAssembly>
+    <Title>HWHash - HWInfo data to Dictionary</Title>
+    <Authors>$(AssemblyName) - DLain</Authors>
+    <Description>HWHash is a static class that grabs HWInfo sensor information and saves it to a Dictionary so it can be easily read and upload to InfluxDB or any other application you may deem useful.</Description>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>hwhash,hwinfo,hwinfo dictionary,hwinfo shared memory, metrics, hardware metrics,</PackageTags>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <RepositoryUrl>https://github.com/layer07/HWHash</RepositoryUrl>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageIcon></PackageIcon>
+    <PackageProjectUrl>https://kernelriot.com</PackageProjectUrl>
+    <GenerateDocumentationFile>False</GenerateDocumentationFile>
+	<VersionPrefix>1.4.0</VersionPrefix>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <Copyright>Everyone but the Author</Copyright>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <Deterministic>True</Deterministic>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <Deterministic>True</Deterministic>
+  </PropertyGroup>
+
+  
+  
+  
+  <ItemGroup>
+    <None Update="LICENSE">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Update="media\icon.png">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Update="readme.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+
+</Project>
