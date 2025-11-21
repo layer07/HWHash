@@ -66,6 +66,12 @@ public static class HWHash
 
     private static int _delayMs = 1000;
 
+    private static readonly ulong[] PowersOf10 =
+{
+    10UL, 100UL, 1000UL, 10000UL, 100000UL,
+    1000000UL, 10000000UL, 100000000UL, 1000000000UL, 10000000000UL
+};
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool SetDelay(int ms)
     {
@@ -354,44 +360,22 @@ public static class HWHash
         _stats = new HWHashStats(0, 0, count, 0);
     }
 
-    // BRUTAL branchless FastConcat using BitOperations
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ulong FastConcat(uint a, uint b)
     {
-        if (b == 0) return a * 10UL;
+        // Branchless population count of comparisons
+        int digits = BitOperations.PopCount(
+            (b >= 10u ? 1u : 0) |
+            (b >= 100u ? 2u : 0) |
+            (b >= 1000u ? 4u : 0) |
+            (b >= 10000u ? 8u : 0) |
+            (b >= 100000u ? 16u : 0) |
+            (b >= 1000000u ? 32u : 0) |
+            (b >= 10000000u ? 64u : 0) |
+            (b >= 100000000u ? 128u : 0)
+        );
 
-        // Calculate magnitude of b using leading zero count
-        uint log2 = (uint)BitOperations.Log2(b);
-
-        // Convert log2 to decimal digits: digits ≈ log2 * 0.301 + 1
-        // Use bit tricks: (log2 * 77) >> 8 ≈ log2 * 0.301
-        uint digits = ((log2 * 77u) >> 8) + 1u;
-
-        // Verify and correct digit count with minimal branching
-        if (b >= 100000000u) digits = 9;
-        else if (b >= 10000000u) digits = 8;
-        else if (b >= 1000000u) digits = 7;
-        else if (b >= 100000u) digits = 6;
-        else if (b >= 10000u) digits = 5;
-        else if (b >= 1000u) digits = 4;
-        else if (b >= 100u) digits = 3;
-        else if (b >= 10u) digits = 2;
-        else digits = 1;
-
-        ulong multiplier = digits switch
-        {
-            1 => 10UL,
-            2 => 100UL,
-            3 => 1000UL,
-            4 => 10000UL,
-            5 => 100000UL,
-            6 => 1000000UL,
-            7 => 10000000UL,
-            8 => 100000000UL,
-            _ => 1000000000UL
-        };
-
-        return multiplier * a + b;
+        return PowersOf10[digits] * a + b;
     }
 
     private static bool IsHWInfoRunning()
