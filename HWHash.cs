@@ -21,14 +21,16 @@
  *           ░  ░     ░  ░░ ░        ░  ░   ░     
  */
 
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
+using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Security;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 
 public static class HWHash
 {
@@ -37,96 +39,109 @@ public static class HWHash
 
     private static MemoryMappedFile _memMap;
     private static HWINFO_MEM _memRegion;
-    private static HWHashStats _stats = new HWHashStats(0, 0, 0, 0);
-    private static int _indexOrder = 0;
+    private static HWHashStats _stats;
+    private static int _indexOrder;
     private static CancellationTokenSource _pollingCTS;
     private static Task _pollingTask;
+    private static bool? _hwInfoRunningCache;
+    private static HWHASH_HEADER[] _headers;
 
-    private static readonly Dictionary<uint, HWHASH_HEADER> _headers = new Dictionary<uint, HWHASH_HEADER>();
-    public static readonly ConcurrentDictionary<ulong, HWINFO_HASH> Sensors = new ConcurrentDictionary<ulong, HWINFO_HASH>();
-    public static readonly ConcurrentDictionary<ulong, HWINFO_HASH_MINI> SensorsMini = new ConcurrentDictionary<ulong, HWINFO_HASH_MINI>();
+    public static readonly ConcurrentDictionary<ulong, HWINFO_HASH> Sensors = new();
+    public static readonly ConcurrentDictionary<ulong, HWINFO_HASH_MINI> SensorsMini = new();
 
-    public static readonly List<string> RelevantSensors = new List<string>
+    private static readonly FrozenSet<string> RelevantSensorsSet = new HashSet<string>
     {
         "Physical Memory Load", "Physical Memory Used", "P-core 0 VID", "P-core 0 Clock", "Ring/LLC Clock",
         "Total CPU Usage", "CPU Package", "Core Max", "CPU Package Power", "Vcore", "+12V", "SPD Hub Temperature",
         "GPU Temperature", "GPU Memory Junction Temperature", "GPU 8-pin #1 Input Voltage",
         "GPU 8-pin #2 Input Voltage", "GPU 8-pin #3 Input Voltage", "GPU Power (Total)", "GPU Core Load",
         "GPU Memory Controller Load", "Current DL rate", "Current UP rate", "Total Errors"
-    };
+    }.ToFrozenSet();
 
-    public static bool HighPriority { get; set; } = false;
-    public static bool HighPrecision { get; set; } = false;
+    [Obsolete("HighPriority has no effect. Kept for backwards compatibility only.")]
+    public static bool HighPriority { get; set; }
+
+    [Obsolete("HighPrecision has no effect on modern Windows. Kept for backwards compatibility only.")]
+    public static bool HighPrecision { get; set; }
+
     private static int _delayMs = 1000;
 
-    /// <summary>Sets polling delay in milliseconds (20–60000).</summary>
-    public static bool SetDelay(int ms) => (ms >= 20 && ms <= 60000) ? (_delayMs = ms, true).Item2 : false;
-
-    /// <summary>Initializes HWHash and starts polling.</summary>
-    public static bool Launch()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool SetDelay(int ms)
     {
-        if (!IsHWInfoRunning())
-            throw new InvalidOperationException("HWiNFO process not found.");
-        if (!ReadMem()) return false;
-        BuildHeaders();
-        if (HighPrecision) { _ = WinApi.TimeBeginPeriod(1); }
-        ReadSensors();
-        _pollingCTS = new CancellationTokenSource();
-        _pollingTask = PollSensorsAsync(_pollingCTS.Token);
+        if (ms < 20 || ms > 60000) return false;
+        _delayMs = ms;
         return true;
     }
 
-    /// <summary>Stops the polling loop.</summary>
+    public static bool Launch()
+    {
+        if (!IsHWInfoRunning())
+        {
+            Debug.WriteLine("[HWHash] HWiNFO process not found.");
+            return false;
+        }
+
+        if (!ReadMem())
+        {
+            Debug.WriteLine("[HWHash] Failed to read shared memory.");
+            return false;
+        }
+
+        BuildHeaders();
+        ReadSensors();
+
+        _pollingCTS = new CancellationTokenSource();
+        _pollingTask = PollSensorsAsync(_pollingCTS.Token);
+
+        return true;
+    }
+
     public static void Stop()
     {
-        if (_pollingCTS != null)
-        {
-            _pollingCTS.Cancel();
-            _pollingCTS = null;
-        }
-        if (HighPrecision) { _ = WinApi.TimeEndPeriod(1); }
+        _pollingCTS?.Cancel();
+        _pollingCTS = null;
     }
 
-    /// <summary>Returns JSON-serialized sensor data. If order==true, returns sensors in display order.</summary>
     public static string GetJsonString(bool order = false) =>
-        order ? JsonSerializer.Serialize<List<HWINFO_HASH>>(GetOrderedList()) :
-        JsonSerializer.Serialize<ConcurrentDictionary<ulong, HWINFO_HASH>>(Sensors);
+        order ? JsonSerializer.Serialize(GetOrderedList()) :
+                JsonSerializer.Serialize(Sensors);
 
-    /// <summary>Returns JSON-serialized minified sensor data. If order==true, returns sensors in display order.</summary>
     public static string GetJsonStringMini(bool order = false) =>
-        order ? JsonSerializer.Serialize<List<HWINFO_HASH_MINI>>(GetOrderedListMini()) :
-        JsonSerializer.Serialize<ConcurrentDictionary<ulong, HWINFO_HASH_MINI>>(SensorsMini);
+        order ? JsonSerializer.Serialize(GetOrderedListMini()) :
+                JsonSerializer.Serialize(SensorsMini);
 
-    /// <summary>Returns collection statistics (includes elapsed milliseconds and raw ticks).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static HWHashStats GetHWHashStats() => _stats;
 
-    /// <summary>Returns sensors ordered by display index.</summary>
     public static List<HWINFO_HASH> GetOrderedList()
     {
-        List<HWINFO_HASH> list = new List<HWINFO_HASH>(Sensors.Values);
-        list.Sort(ExplicitComparison);
+        var list = new List<HWINFO_HASH>(Sensors.Values);
+        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
         return list;
     }
 
-    /// <summary>Returns minified sensors ordered by display index.</summary>
     public static List<HWINFO_HASH_MINI> GetOrderedListMini()
     {
-        List<HWINFO_HASH_MINI> list = new List<HWINFO_HASH_MINI>(SensorsMini.Values);
-        list.Sort(ExplicitComparisonMini);
+        var list = new List<HWINFO_HASH_MINI>(SensorsMini.Values);
+        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
         return list;
     }
 
-    /// <summary>Returns only relevant sensors.</summary>
     public static List<HWINFO_HASH> GetRelevantList()
     {
-        List<HWINFO_HASH> list = new List<HWINFO_HASH>();
-        foreach (HWINFO_HASH sensor in Sensors.Values)
-            if (RelevantSensors.Contains(sensor.NameDefault))
+        var list = new List<HWINFO_HASH>(RelevantSensorsSet.Count);
+
+        foreach (var sensor in Sensors.Values)
+        {
+            if (RelevantSensorsSet.Contains(sensor.NameDefault))
             {
-                string clean = sensor.NameDefault.Replace(" ", "").Replace("/", "");
-                list.Add(sensor with { NameCustom = clean + sensor.SensorIndex });
+                string clean = sensor.NameDefault.Replace(" ", "").Replace("/", "") + sensor.SensorIndex;
+                list.Add(sensor with { NameCustom = clean });
             }
-        list.Sort(ExplicitComparison);
+        }
+
+        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
         return list;
     }
 
@@ -134,186 +149,283 @@ public static class HWHash
     {
         while (!token.IsCancellationRequested)
         {
-            Stopwatch sw = Stopwatch.StartNew();
+            long start = Stopwatch.GetTimestamp();
             ReadSensors();
-            sw.Stop();
-            double ms = sw.ElapsedTicks / (double)Stopwatch.Frequency * 1000;
-            _stats = _stats with { CollectionTime = ms, CollectionTimeTicks = sw.ElapsedTicks };
-            try { await Task.Delay(_delayMs, token); } catch (TaskCanceledException) { break; }
+            long elapsed = Stopwatch.GetTimestamp() - start;
+
+            double ms = elapsed * 1000.0 / Stopwatch.Frequency;
+            _stats = new HWHashStats(ms, elapsed, _stats.TotalCategories, _stats.TotalEntries);
+
+            try { await Task.Delay(_delayMs, token); }
+            catch (TaskCanceledException) { break; }
         }
     }
 
     private static void ReadSensors()
     {
-        _stats = _stats with { TotalEntries = _memRegion.TOTAL_ReadingElements };
-        MiniBenchmark(0);
-        long totalSize = _memRegion.TOTAL_ReadingElements * _memRegion.SIZE_Reading;
+        uint totalEntries = _memRegion.TOTAL_ReadingElements;
+        _stats = new HWHashStats(_stats.CollectionTime, _stats.CollectionTimeTicks, _stats.TotalCategories, totalEntries);
+
+        long totalSize = totalEntries * _memRegion.SIZE_Reading;
+        byte[] pooledBuffer = ArrayPool<byte>.Shared.Rent((int)totalSize);
+
         try
         {
-            using (var accessor = _memMap.CreateViewAccessor(_memRegion.OFFSET_Reading, totalSize, MemoryMappedFileAccess.Read))
+            using var accessor = _memMap.CreateViewAccessor(
+                _memRegion.OFFSET_Reading,
+                totalSize,
+                MemoryMappedFileAccess.Read
+            );
+
+            accessor.ReadArray(0, pooledBuffer, 0, (int)totalSize);
+
+            GCHandle handle = GCHandle.Alloc(pooledBuffer, GCHandleType.Pinned);
+            IntPtr basePtr = handle.AddrOfPinnedObject();
+
+            try
             {
-                byte[] allData = new byte[totalSize];
-                accessor.ReadArray(0, allData, 0, allData.Length);
-                GCHandle handle = GCHandle.Alloc(allData, GCHandleType.Pinned);
-                IntPtr basePtr = handle.AddrOfPinnedObject();
-                Parallel.For(0, (int)_memRegion.TOTAL_ReadingElements,
-                    new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                    (int i) =>
-                    {
-                        IntPtr ptr = IntPtr.Add(basePtr, i * (int)_memRegion.SIZE_Reading);
-                        HWHASH_ELEMENT reading = Marshal.PtrToStructure<HWHASH_ELEMENT>(ptr);
-                        UpdateSensorData(reading);
-                    });
+                int stride = (int)_memRegion.SIZE_Reading;
+                int limit = (int)totalEntries;
+
+                // Unrolled loop for better ILP
+                int i = 0;
+                int unrolledLimit = limit - (limit % 4);
+
+                for (; i < unrolledLimit; i += 4)
+                {
+                    ReadSensorElement(IntPtr.Add(basePtr, i * stride));
+                    ReadSensorElement(IntPtr.Add(basePtr, (i + 1) * stride));
+                    ReadSensorElement(IntPtr.Add(basePtr, (i + 2) * stride));
+                    ReadSensorElement(IntPtr.Add(basePtr, (i + 3) * stride));
+                }
+
+                for (; i < limit; i++)
+                {
+                    ReadSensorElement(IntPtr.Add(basePtr, i * stride));
+                }
+            }
+            finally
+            {
                 handle.Free();
             }
         }
         catch (Exception ex)
         {
-            Debug.WriteLine("Error reading sensors: " + ex.Message);
+            Debug.WriteLine($"[HWHash] Error reading sensors: {ex.Message}");
         }
-        MiniBenchmark(1);
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pooledBuffer);
+        }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ReadSensorElement(IntPtr ptr)
+    {
+        var reading = Marshal.PtrToStructure<HWHASH_ELEMENT>(ptr);
+        UpdateSensorData(reading);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void UpdateSensorData(HWHASH_ELEMENT r)
     {
         ulong uid = FastConcat(r.ID, r.Index);
-        if (!Sensors.ContainsKey(uid))
+
+        if (!Sensors.TryGetValue(uid, out var existing))
         {
             int order = Interlocked.Increment(ref _indexOrder) - 1;
-            HWINFO_HASH_MINI mini = new HWINFO_HASH_MINI(uid, r.NameCustom, r.Unit, r.Value, r.Value, order, TypeToString(r.SENSOR_TYPE));
-            HWINFO_HASH full = new HWINFO_HASH(
-                TypeToString(r.SENSOR_TYPE),
-                r.Index, r.ID, uid,
+            string typeStr = TypeToString(r.SENSOR_TYPE);
+
+            var header = _headers[r.Index];
+            ulong parentUid = FastConcat(header.ID, header.Instance);
+
+            var mini = new HWINFO_HASH_MINI(uid, r.NameCustom, r.Unit, r.Value, r.Value, order, typeStr);
+            var full = new HWINFO_HASH(
+                typeStr, r.Index, r.ID, uid,
                 r.NameDefault, r.NameCustom, r.Unit,
                 r.Value, r.ValueMin, r.ValueMax, r.ValueAvg, r.Value,
-                _headers[r.Index].NameDefault, _headers[r.Index].NameCustom,
-                _headers[r.Index].ID, _headers[r.Index].Instance,
-                FastConcat(_headers[r.Index].ID, _headers[r.Index].Instance),
-                order);
+                header.NameDefault, header.NameCustom,
+                header.ID, header.Instance, parentUid, order
+            );
+
             Sensors.TryAdd(uid, full);
             SensorsMini.TryAdd(uid, mini);
         }
         else
         {
-            Sensors.AddOrUpdate(uid,
-                (ulong key) => throw new Exception("Unexpected condition."),
-                (ulong key, HWINFO_HASH prev) => prev with
-                {
-                    ValuePrev = prev.ValueNow,
-                    ValueNow = r.Value,
-                    ValueMin = r.ValueMin,
-                    ValueMax = r.ValueMax,
-                    ValueAvg = r.ValueAvg
-                });
-            SensorsMini.AddOrUpdate(uid,
-                (ulong key) => throw new Exception("Unexpected condition."),
-                (ulong key, HWINFO_HASH_MINI prev) => prev with
-                {
-                    ValuePrev = prev.ValueNow,
-                    ValueNow = r.Value
-                });
+            Sensors[uid] = existing with
+            {
+                ValuePrev = existing.ValueNow,
+                ValueNow = r.Value,
+                ValueMin = r.ValueMin,
+                ValueMax = r.ValueMax,
+                ValueAvg = r.ValueAvg
+            };
+
+            SensorsMini[uid] = SensorsMini[uid] with
+            {
+                ValuePrev = SensorsMini[uid].ValueNow,
+                ValueNow = r.Value
+            };
         }
     }
 
-    private static int ExplicitComparison(HWINFO_HASH a, HWINFO_HASH b) => a.IndexOrder.CompareTo(b.IndexOrder);
-    private static int ExplicitComparisonMini(HWINFO_HASH_MINI a, HWINFO_HASH_MINI b) => a.IndexOrder.CompareTo(b.IndexOrder);
-
-    private static string TypeToString(SENSOR_READING_TYPE t)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string TypeToString(SENSOR_READING_TYPE t) => t switch
     {
-        int index = (int)t;
-        return (index >= 0 && index < SensorTypeStrings.Length) ? SensorTypeStrings[index] : "Unknown";
-    }
+        SENSOR_READING_TYPE.SENSOR_TYPE_TEMP => "Temperature",
+        SENSOR_READING_TYPE.SENSOR_TYPE_VOLT => "Voltage",
+        SENSOR_READING_TYPE.SENSOR_TYPE_FAN => "Fan",
+        SENSOR_READING_TYPE.SENSOR_TYPE_CURRENT => "Current",
+        SENSOR_READING_TYPE.SENSOR_TYPE_POWER => "Power",
+        SENSOR_READING_TYPE.SENSOR_TYPE_CLOCK => "Frequency",
+        SENSOR_READING_TYPE.SENSOR_TYPE_USAGE => "Usage",
+        SENSOR_READING_TYPE.SENSOR_TYPE_OTHER => "Other",
+        _ => "None"
+    };
 
     private static bool ReadMem()
     {
         try
         {
             _memMap = MemoryMappedFile.OpenExisting(SHARED_MEM_PATH, MemoryMappedFileRights.Read);
-            _memRegion = new HWINFO_MEM();
-            using (var accessor = _memMap.CreateViewAccessor(0L, Marshal.SizeOf(typeof(HWINFO_MEM)), MemoryMappedFileAccess.Read))
-            {
-                accessor.Read(0L, out _memRegion);
-            }
+
+            using var accessor = _memMap.CreateViewAccessor(
+                0L,
+                Marshal.SizeOf<HWINFO_MEM>(),
+                MemoryMappedFileAccess.Read
+            );
+
+            accessor.Read(0L, out _memRegion);
             return true;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine("Error reading shared memory: " + ex.Message);
+            Debug.WriteLine($"[HWHash] Error reading shared memory: {ex.Message}");
             return false;
         }
     }
 
     private static void BuildHeaders()
     {
-        long totalSize = _memRegion.SS_SensorElements * _memRegion.SS_SIZE;
+        uint count = _memRegion.SS_SensorElements;
+        _headers = new HWHASH_HEADER[count];
+
+        long totalSize = count * _memRegion.SS_SIZE;
+        byte[] pooledBuffer = ArrayPool<byte>.Shared.Rent((int)totalSize);
+
         try
         {
-            using (var accessor = _memMap.CreateViewAccessor(_memRegion.SS_OFFSET, totalSize, MemoryMappedFileAccess.Read))
+            using var accessor = _memMap.CreateViewAccessor(
+                _memRegion.SS_OFFSET,
+                totalSize,
+                MemoryMappedFileAccess.Read
+            );
+
+            accessor.ReadArray(0, pooledBuffer, 0, (int)totalSize);
+
+            GCHandle handle = GCHandle.Alloc(pooledBuffer, GCHandleType.Pinned);
+            IntPtr basePtr = handle.AddrOfPinnedObject();
+
+            try
             {
-                byte[] headerData = new byte[totalSize];
-                accessor.ReadArray(0, headerData, 0, headerData.Length);
-                GCHandle handle = GCHandle.Alloc(headerData, GCHandleType.Pinned);
-                IntPtr basePtr = handle.AddrOfPinnedObject();
-                for (uint i = 0; i < _memRegion.SS_SensorElements; i++)
+                int stride = (int)_memRegion.SS_SIZE;
+
+                for (uint i = 0; i < count; i++)
                 {
-                    IntPtr ptr = IntPtr.Add(basePtr, (int)(i * _memRegion.SS_SIZE));
-                    HWHASH_HEADER header = Marshal.PtrToStructure<HWHASH_HEADER>(ptr);
-                    _headers[i] = header;
+                    IntPtr ptr = IntPtr.Add(basePtr, (int)(i * stride));
+                    _headers[i] = Marshal.PtrToStructure<HWHASH_HEADER>(ptr);
                 }
+            }
+            finally
+            {
                 handle.Free();
             }
         }
         catch (Exception ex)
         {
-            Debug.WriteLine("Error building headers: " + ex.Message);
+            Debug.WriteLine($"[HWHash] Error building headers: {ex.Message}");
         }
-        _stats = _stats with { TotalCategories = _memRegion.SS_SensorElements };
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pooledBuffer);
+        }
+
+        _stats = new HWHashStats(0, 0, count, 0);
     }
 
-    private static Stopwatch _benchSW = new Stopwatch();
-    private static void MiniBenchmark(int mode)
+    // BRUTAL branchless FastConcat using BitOperations
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong FastConcat(uint a, uint b)
     {
-        if (mode == 0) _benchSW.Restart();
-        else _stats = _stats with { CollectionTime = _benchSW.ElapsedMilliseconds };
-    }
+        if (b == 0) return a * 10UL;
 
-    private static ulong FastConcat(uint a, uint b) =>
-        b < 10 ? 10UL * a + b :
-        b < 100 ? 100UL * a + b :
-        b < 1000 ? 1000UL * a + b :
-        b < 10000 ? 10000UL * a + b :
-        b < 100000 ? 100000UL * a + b :
-        b < 1000000 ? 1000000UL * a + b :
-        b < 10000000 ? 10000000UL * a + b :
-        b < 100000000 ? 100000000UL * a + b :
-        1000000000UL * a + b;
+        // Calculate magnitude of b using leading zero count
+        uint log2 = (uint)BitOperations.Log2(b);
+
+        // Convert log2 to decimal digits: digits ≈ log2 * 0.301 + 1
+        // Use bit tricks: (log2 * 77) >> 8 ≈ log2 * 0.301
+        uint digits = ((log2 * 77u) >> 8) + 1u;
+
+        // Verify and correct digit count with minimal branching
+        if (b >= 100000000u) digits = 9;
+        else if (b >= 10000000u) digits = 8;
+        else if (b >= 1000000u) digits = 7;
+        else if (b >= 100000u) digits = 6;
+        else if (b >= 10000u) digits = 5;
+        else if (b >= 1000u) digits = 4;
+        else if (b >= 100u) digits = 3;
+        else if (b >= 10u) digits = 2;
+        else digits = 1;
+
+        ulong multiplier = digits switch
+        {
+            1 => 10UL,
+            2 => 100UL,
+            3 => 1000UL,
+            4 => 10000UL,
+            5 => 100000UL,
+            6 => 1000000UL,
+            7 => 10000000UL,
+            8 => 100000000UL,
+            _ => 1000000000UL
+        };
+
+        return multiplier * a + b;
+    }
 
     private static bool IsHWInfoRunning()
     {
-        Process[] processes = Process.GetProcesses();
-        Regex regex = new Regex(@"hwinfo(?:32|64)?", RegexOptions.IgnoreCase);
-        foreach (Process proc in processes)
-            if (regex.IsMatch(proc.ProcessName))
+        if (_hwInfoRunningCache.HasValue)
+            return _hwInfoRunningCache.Value;
+
+        var processes = Process.GetProcesses();
+
+        foreach (var proc in processes)
+        {
+            var name = proc.ProcessName;
+
+            if (name.Length >= 6 &&
+                (name.StartsWith("hwinfo", StringComparison.OrdinalIgnoreCase) ||
+                 name.StartsWith("HWiNFO", StringComparison.Ordinal)))
+            {
+                _hwInfoRunningCache = true;
                 return true;
+            }
+        }
+
+        _hwInfoRunningCache = false;
         return false;
     }
 
-    private static class WinApi
-    {
-        [SuppressUnmanagedCodeSecurity]
-        [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", SetLastError = true)]
-        public static extern uint TimeBeginPeriod(uint uMilliseconds);
-        [SuppressUnmanagedCodeSecurity]
-        [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", SetLastError = true)]
-        public static extern uint TimeEndPeriod(uint uMilliseconds);
-    }
+    public readonly record struct HWHashStats(
+        double CollectionTime,
+        long CollectionTimeTicks,
+        uint TotalCategories,
+        uint TotalEntries
+    );
 
-    public record struct HWHashStats(double CollectionTime, long CollectionTimeTicks, uint TotalCategories, uint TotalEntries)
-    {
-        public HWHashStats() : this(0, 0, 0, 0) { }
-    }
-
-    public record struct HWINFO_HASH(
+    public readonly record struct HWINFO_HASH(
         string ReadingType,
         uint SensorIndex,
         uint SensorID,
@@ -334,14 +446,14 @@ public static class HWHash
         int IndexOrder
     );
 
-    public record struct HWINFO_HASH_MINI(
+    public readonly record struct HWINFO_HASH_MINI(
         ulong UniqueID,
         string NameCustom,
         string Unit,
         double ValuePrev,
         double ValueNow,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.Always)] int IndexOrder,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.Always)] string ReadingType
+        [property: JsonIgnore] int IndexOrder,
+        [property: JsonIgnore] string ReadingType
     );
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -388,7 +500,7 @@ public static class HWHash
         public uint TOTAL_ReadingElements;
     }
 
-    private enum SENSOR_READING_TYPE
+    private enum SENSOR_READING_TYPE : uint
     {
         SENSOR_TYPE_NONE,
         SENSOR_TYPE_TEMP,
@@ -400,17 +512,4 @@ public static class HWHash
         SENSOR_TYPE_USAGE,
         SENSOR_TYPE_OTHER,
     }
-
-    private static readonly string[] SensorTypeStrings = new string[]
-    {
-        "None",
-        "Temperature",
-        "Voltage",
-        "Fan",
-        "Current",
-        "Power",
-        "Frequency",
-        "Usage",
-        "Other"
-    };
 }
