@@ -10,7 +10,7 @@ A tiny, singleton (static) class that reads HWiNFO Shared Memory and packs it to
 
 - 🦄 Single file static class with no external dependencies.
 - 😲 Tiny footprint, no memory leaks and 0.01% CPU Usage.
-- 💨Blazing fast, <1millisecond to iterate over 300 sensors.
+- 💨Blazing fast, <1millisecond to iterate over 600+ sensors.
 - ✨It simply works.
 
 ## Features
@@ -40,27 +40,15 @@ HWHash.Launch();
 ---
 Options
 ---
-There are three startup options for HWHash.
 
 | Option | Default |
 | ------ | ------ |
-| HighPrecision | ![](https://img.shields.io/static/v1?label=&message=false&color=ff7da8)  |
-| HighPriority | ![](https://img.shields.io/static/v1?label=&message=false&color=ff7da8) |
 | Delay | ![](https://img.shields.io/static/v1?label=&message=1000ms&color=b0a2f9) |
 
 ---
 How to configure
 ---
 *Make sure you set the parameters **before** Lauching the HWHash thread.*
-
-High Precision:
-```c#
-HWHash.HighPrecision = true;
-```
-High Priority:
-```c#
-HWHash.HighPriority = true;
-```
 
 Delay:
 ```c#
@@ -70,17 +58,25 @@ HWHash.SetDelay(500);
 
 Then -> ```Launch()```
 ```c#
-HWHash.HighPrecision = true;
-HWHash.HighPriority = true;
 HWHash.SetDelay(500);
 HWHash.Launch();
+```
+---
+Stopping
+---
+```c#
+//Fire and forget
+HWHash.Stop();
+
+//Graceful shutdown (awaits last poll cycle)
+await HWHash.StopAsync();
 ```
 ---
 Basic Functions
 ---
 ```c#
 //Returns a List<HWINFO_HASH> in the same order as HWiNFO UI
-List<HWiNFO_HASH> MyHWHashList = HWHash.GetOrderedList();
+List<HWINFO_HASH> MyHWHashList = HWHash.GetOrderedList();
 //Same as above but in a minified version
 List<HWINFO_HASH_MINI> MyHWHashListMini = HWHash.GetOrderedListMini();
 ```
@@ -99,72 +95,58 @@ Default Struct
 ---
 This is the base struct, it contains all HWiNFO sensor data, such as min, max and avg values.
 ```c#
- public record struct HWINFO_HASH
-    {
-        public string ReadingType { get; set; }
-        public uint SensorIndex { get; set; }
-        public uint SensorID { get; set; }
-        public ulong UniqueID { get; set; }
-        public string NameDefault { get; set; }
-        public string NameCustom { get; set; }
-        public string Unit { get; set; }
-        public double ValueNow { get; set; }
-        public double ValueMin { get; set; }
-        public double ValueMax { get; set; }
-        public double ValueAvg { get; set; }
-        public string ParentNameDefault { get; set; }
-        public string ParentNameCustom { get; set; }
-        public uint ParentID { get; set; }
-        public uint ParentInstance { get; set; }
-        public ulong ParentUniqueID { get; set; }
-        public int IndexOrder { get; set; }
-    }
+public readonly record struct HWINFO_HASH(
+    string ReadingType,
+    uint SensorIndex,
+    uint SensorID,
+    ulong UniqueID,
+    string NameDefault,
+    string NameCustom,
+    string Unit,
+    double ValueNow,
+    double ValueMin,
+    double ValueMax,
+    double ValueAvg,
+    double ValuePrev,
+    string ParentNameDefault,
+    string ParentNameCustom,
+    uint ParentID,
+    uint ParentInstance,
+    ulong ParentUniqueID,
+    int IndexOrder
+);
 ```
 Minified Struct
 ---
 The minified version is more suitable for 'realtime' monitoring, since it is packed in a much smaller package.
 ```c#
-public record struct HWINFO_HASH_MINI
-    {
-        public ulong UniqueID { get; set; }
-        public string NameCustom { get; set; }
-        public string Unit { get; set; }
-        public double ValueNow { get; set; }
-        [JsonIgnore(Condition = JsonIgnoreCondition.Always)]
-        public int IndexOrder { get; set; }
-    }
+public readonly record struct HWINFO_HASH_MINI(
+    ulong UniqueID,
+    string NameCustom,
+    string Unit,
+    double ValuePrev,
+    double ValueNow,
+    [property: JsonIgnore] int IndexOrder,
+    [property: JsonIgnore] string ReadingType
+);
 ```
 Relevant Sensor List
 ---
 If you prefer to avoid manually searching for sensor IDs and wish to access a curated List<HWINFO_HASH> of relevant sensors directly, use this function.
-```c#
-	public static List<string> RelevantSensorsList { get; } = new List<string>
-	{
-		"Physical Memory Load",
-		"Physical Memory Used",
-		"P-core 0 VID",
-		"P-core 0 Clock",
-		"Ring/LLC Clock",
-		"Total CPU Usage",
-		"CPU Package",
-		"Core Max",
-		"CPU Package Power",
-		"Vcore",
-		"+12V",
-		"SPD Hub Temperature",
-		"GPU Temperature",
-		"GPU Memory Junction Temperature",
-		"GPU 8-pin #1 Input Voltage",
-		"GPU 8-pin #2 Input Voltage",
-		"GPU 8-pin #3 Input Voltage",
-		"GPU Power (Total)",
-		"GPU Core Load",
-		"GPU Memory Controller Load",
-		"Current DL rate",
-		"Current UP rate",
-		"Total Errors"
-	};
 
+The relevant sensors are stored in a `FrozenSet<string>` for O(1) lookups.
+```c#
+List<HWINFO_HASH> MyRelevantSensors = HWHash.GetRelevantList();
+```
+
+Default relevant sensors:
+```
+Physical Memory Load, Physical Memory Used, P-core 0 VID, P-core 0 Clock,
+Ring/LLC Clock, Total CPU Usage, CPU Package, Core Max, CPU Package Power,
+Vcore, +12V, SPD Hub Temperature, GPU Temperature,
+GPU Memory Junction Temperature, GPU 8-pin #1/2/3 Input Voltage,
+GPU Power (Total), GPU Core Load, GPU Memory Controller Load,
+Current DL rate, Current UP rate, Total Errors
 ```
 
 PowerShell Integration
@@ -177,7 +159,7 @@ In case you want to invoke **HWHash** from **PowerShell**, it is possible to do 
 
 ```powershell
 #Don't forget to change the line below
-$Path = "A:\GITHUB\HWHash\bin\Debug\net6.0\HWHash.dll"
+$Path = "A:\GITHUB\HWHash\bin\Debug\net9.0\HWHash.dll"
 $ClassName = "HWHash"
 $MethodLaunch = "Launch"
 $MethodJsonStringMini = "GetJsonStringMini"
@@ -219,20 +201,20 @@ HWHashStats _Stats = HWHash.GetHWHashStats();
 ```
  HWHashStats *struct*
 ```c#
-public record struct HWHashStats
-    {
-        public long CollectionTime { get; set; }
-        public uint TotalCategories { get; set; }
-        public uint TotalEntries { get; set; }
-    }
+public readonly record struct HWHashStats(
+    double CollectionTime,
+    long CollectionTimeTicks,
+    uint TotalCategories,
+    uint TotalEntries
+);
 ```
 The most critical information we want to inspect is
 ```c#
 ...
-long ProfilingTime = _Stats.CollectionTime;
+double ProfilingTime = _Stats.CollectionTime;
 ...
 ```
-On a decent modern system, even if there are over 300 sensors, profiling times should stay <1 millisecond. Which is not a concern since HWiNFO will flush new data with a minimum delay of 100ms between readings.
+On a decent modern system, even if there are over 600 sensors, profiling times should stay <1 millisecond. Which is not a concern since HWiNFO will flush new data with a minimum delay of 100ms between readings.
 
 [![N|Solid](https://i.imgur.com/NHrArS2.png)]()
 
@@ -242,9 +224,9 @@ We know that for Overclockers and Hardware enthusiasts, it is important to have 
 
 Notes on Sensor Poll Rate
 ---
-This library relies on a third party application, which is HWiNFO, and HWiNFO relies on the exposed sensors from your hardware, such as motherboard sensors, CPU, GPU sensors, etc. 
+This library relies on a third party application, which is HWiNFO, and HWiNFO relies on the exposed sensors from your hardware, such as motherboard sensors, CPU, GPU sensors, etc.
 
-Usually sensor access/read is deadly fast (nanoseconds) and it is never a bottleneck. There are few rare examples, for instance, on my personal system I am currently using Corsair Vengeance memory sticks, and each memory stick has a temperature sensor, out of 359 different readings on my system, the DIMMs are the only ones who take more than nanoseconds to be read, in my case, HWiNFO takes around 6MS to poll the Memory Temperature from all chips. 
+Usually sensor access/read is deadly fast (nanoseconds) and it is never a bottleneck. There are few rare examples, for instance, on my personal system I am currently using Corsair Vengeance memory sticks, and each memory stick has a temperature sensor, out of 359 different readings on my system, the DIMMs are the only ones who take more than nanoseconds to be read, in my case, HWiNFO takes around 6MS to poll the Memory Temperature from all chips.
 
 Since HWiNFO fastest "poll rate" is 50MS, it is not a problem, but it is definitely something that we should keep an eye on when reading from sensors exposed by our hardware.
 
@@ -274,6 +256,10 @@ To-do
 - [x] Add Min, Max, Average
 - [x] Store previous reading value
 - [x] PowerShell Integration
+- [x] ArrayPool for zero-alloc sensor reads
+- [x] FrozenSet for O(1) relevant sensor lookups
+- [x] StopAsync for graceful shutdown
+- [x] Readonly record structs
 
 ### License
 This project is licensed under [GLWTPL](./LICENSE)
