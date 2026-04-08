@@ -2,7 +2,7 @@
 /*
  * HWHash.cs
  * 
- * Version: @(#)HWHash.cs 1.0.3 22/02/2025
+ * Version: @(#)HWHash.cs 1.5.0 07/04/2026
  *
  * Description: HWiNFO Shared Memory Interface
  *
@@ -20,31 +20,29 @@
  *         ░ ░    ░   ▒   ▒ ▒ ░░     ░     ░░   ░ 
  *           ░  ░     ░  ░░ ░        ░  ░   ░     
  */
-
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public static class HWHash
 {
     private const string SHARED_MEM_PATH = "Global\\HWiNFO_SENS_SM2";
     private const int SENSOR_STRING_LEN = 128, READING_STRING_LEN = 16;
 
-    private static MemoryMappedFile _memMap;
+    private static MemoryMappedFile? _memMap;
     private static HWINFO_MEM _memRegion;
     private static HWHashStats _stats;
     private static int _indexOrder;
-    private static CancellationTokenSource _pollingCTS;
-    private static Task _pollingTask;
+    private static CancellationTokenSource? _pollingCTS;
+    private static Task? _pollingTask;
     private static bool? _hwInfoRunningCache;
-    private static HWHASH_HEADER[] _headers;
+    private static HWHASH_HEADER[]? _headers;
 
     public static readonly ConcurrentDictionary<ulong, HWINFO_HASH> Sensors = new();
     public static readonly ConcurrentDictionary<ulong, HWINFO_HASH_MINI> SensorsMini = new();
@@ -65,12 +63,6 @@ public static class HWHash
     public static bool HighPrecision { get; set; }
 
     private static int _delayMs = 1000;
-
-    private static readonly ulong[] PowersOf10 =
-{
-    10UL, 100UL, 1000UL, 10000UL, 100000UL,
-    1000000UL, 10000000UL, 100000000UL, 1000000000UL, 10000000000UL
-};
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool SetDelay(int ms)
@@ -106,6 +98,13 @@ public static class HWHash
     public static void Stop()
     {
         _pollingCTS?.Cancel();
+        _pollingCTS = null;
+    }
+
+    public static async Task StopAsync()
+    {
+        _pollingCTS?.Cancel();
+        if (_pollingTask != null) await _pollingTask;
         _pollingCTS = null;
     }
 
@@ -177,8 +176,8 @@ public static class HWHash
 
         try
         {
-            using var accessor = _memMap.CreateViewAccessor(
-                _memRegion.OFFSET_Reading,
+            using var accessor = _memMap!.CreateViewAccessor(
+                            _memRegion.OFFSET_Reading,
                 totalSize,
                 MemoryMappedFileAccess.Read
             );
@@ -235,15 +234,15 @@ public static class HWHash
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void UpdateSensorData(HWHASH_ELEMENT r)
     {
-        ulong uid = FastConcat(r.ID, r.Index);
+        ulong uid = MakeUID(r.ID, r.Index);
 
         if (!Sensors.TryGetValue(uid, out var existing))
         {
             int order = Interlocked.Increment(ref _indexOrder) - 1;
             string typeStr = TypeToString(r.SENSOR_TYPE);
 
-            var header = _headers[r.Index];
-            ulong parentUid = FastConcat(header.ID, header.Instance);
+            var header = _headers![r.Index];
+            ulong parentUid = MakeUID(header.ID, header.Instance);
 
             var mini = new HWINFO_HASH_MINI(uid, r.NameCustom, r.Unit, r.Value, r.Value, order, typeStr);
             var full = new HWINFO_HASH(
@@ -322,7 +321,7 @@ public static class HWHash
 
         try
         {
-            using var accessor = _memMap.CreateViewAccessor(
+            using var accessor = _memMap!.CreateViewAccessor(
                 _memRegion.SS_OFFSET,
                 totalSize,
                 MemoryMappedFileAccess.Read
@@ -361,22 +360,7 @@ public static class HWHash
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong FastConcat(uint a, uint b)
-    {
-        // Branchless population count of comparisons
-        int digits = BitOperations.PopCount(
-            (b >= 10u ? 1u : 0) |
-            (b >= 100u ? 2u : 0) |
-            (b >= 1000u ? 4u : 0) |
-            (b >= 10000u ? 8u : 0) |
-            (b >= 100000u ? 16u : 0) |
-            (b >= 1000000u ? 32u : 0) |
-            (b >= 10000000u ? 64u : 0) |
-            (b >= 100000000u ? 128u : 0)
-        );
-
-        return PowersOf10[digits] * a + b;
-    }
+    static ulong MakeUID(uint a, uint b) => ((ulong)a << 32) | b;
 
     private static bool IsHWInfoRunning()
     {
