@@ -3,6 +3,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 	<SignAssembly>True</SignAssembly>
     <Title>HWHash - HWInfo data to Dictionary</Title>
     <Authors>$(AssemblyName) - DLain</Authors>
@@ -11,13 +12,13 @@
     <PackageTags>hwhash,hwinfo,hwinfo dictionary,hwinfo shared memory, metrics, hardware metrics,</PackageTags>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <RepositoryUrl>https://github.com/layer07/HWHash</RepositoryUrl>
-    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageReadmeFile>nuget.md</PackageReadmeFile>
     <PackageIcon></PackageIcon>
     <PackageProjectUrl>https://kernelriot.com</PackageProjectUrl>
     <GenerateDocumentationFile>False</GenerateDocumentationFile>
-	<VersionPrefix>1.5.0</VersionPrefix>
-    <AssemblyVersion>1.5.0.0</AssemblyVersion>
-    <FileVersion>1.5.0.0</FileVersion>
+	<VersionPrefix>1.6.0</VersionPrefix>
+    <AssemblyVersion>1.6.0.0</AssemblyVersion>
+    <FileVersion>1.6.0.0</FileVersion>
     <Copyright>Everyone but the Author</Copyright>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
   </PropertyGroup>
@@ -37,7 +38,7 @@
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
-    <None Update="readme.md">
+    <None Update="nuget.md">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>

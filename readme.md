@@ -261,5 +261,32 @@ To-do
 - [x] StopAsync for graceful shutdown
 - [x] Readonly record structs
 
+Changelog
+---
+
+### 1.6.0
+Same API. Nothing removed, nothing renamed, your code keeps working.
+
+- Read cycle ~47x faster, 295µs -> 6µs on 649 sensors, zero allocations when values don't change
+- Worst case, every sensor changed: still 5.3x faster with half the garbage
+- `GetOrderedList()` 2.7x, `GetRelevantList()` 25x, JSON up to 1.4x faster
+- Survives HWiNFO restarts, reconnects on its own
+- Picks up sensors added/removed in HWiNFO, no relaunch
+- `Launch()` before HWiNFO was open could never succeed afterwards. Fixed.
+- Calling `Launch()` twice spawned two pollers. Fixed.
+- Torn reads on `GetHWHashStats()` across threads. Fixed.
+- New `HWHash.Updated` event, fires after every read cycle
+- New `HWHash.IsConnected` and `HWHash.LastUpdate`, so you know when data goes stale
+- JSON via source generators, trim/AOT friendly, same output byte for byte
+
+### 1.5.0
+- ArrayPool, FrozenSet, readonly record structs, branchless UID
+- Killed Regex and Parallel.For
+
 ### License
 This project is licensed under [GLWTPL](./LICENSE)
+
+### Contact
+Questions, bugs or ideas? Feel free to reach out.
+
+**Magnus Leatti** · [magnusleatti@kernelriot.com](mailto:magnusleatti@kernelriot.com)

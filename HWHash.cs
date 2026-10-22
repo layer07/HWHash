@@ -1,8 +1,8 @@
 ﻿// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * HWHash.cs
- * 
- * Version: @(#)HWHash.cs 1.5.0 07/04/2026
+ *
+ * Version: @(#)HWHash.cs 1.6.0 22/10/2026
  *
  * Description: HWiNFO Shared Memory Interface
  *
@@ -10,17 +10,16 @@
  * URL: https://kernelriot.com
  * Github: /layer07
  *
- *        ██▓    ▄▄▄     ▓██   ██▓▓█████  ██▀███  
+ *        ██▓    ▄▄▄     ▓██   ██▓▓█████  ██▀███
  *       ▓██▒   ▒████▄    ▒██  ██▒▓█   ▀ ▓██ ▒ ██▒
  *       ▒██░   ▒██  ▀█▄   ▒██ ██░▒███   ▓██ ░▄█ ▒
- *       ▒██░   ░██▄▄▄▄██  ░ ▐██▓░▒▓█ ▄ ▒██▀▀█▄  
+ *       ▒██░   ░██▄▄▄▄██  ░ ▐██▓░▒▓█ ▄ ▒██▀▀█▄
  *       ░██████▒▓█   ▓██▒ ░ ██▒▓░░▒████▒░██▓ ▒██▒
  *       ░ ▒░▓  ░▒▒   ▓▒█░  ██▒▒▒ ░░ ▒░ ░░ ▒▓ ░▒▓░
  *       ░ ░ ▒  ░ ▒   ▒▒ ░▓██ ░▒░  ░ ░  ░  ░▒ ░ ▒░
- *         ░ ░    ░   ▒   ▒ ▒ ░░     ░     ░░   ░ 
- *           ░  ░     ░  ░░ ░        ░  ░   ░     
+ *         ░ ░    ░   ▒   ▒ ▒ ░░     ░     ░░   ░
+ *           ░  ░     ░  ░░ ░        ░  ░   ░
  */
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Diagnostics;
@@ -34,15 +33,29 @@ public static class HWHash
 {
     private const string SHARED_MEM_PATH = "Global\\HWiNFO_SENS_SM2";
     private const int SENSOR_STRING_LEN = 128, READING_STRING_LEN = 16;
+    private const uint SIG_ACTIVE = 0x53695748; // "HWiS", HWiNFO writes "DEAD" on exit
+
+    // native offsets inside a reading element, values are 4 consecutive doubles: now, min, max, avg
+    private static readonly int OFF_INDEX = (int)Marshal.OffsetOf<HWHASH_ELEMENT>(nameof(HWHASH_ELEMENT.Index));
+    private static readonly int OFF_ID = (int)Marshal.OffsetOf<HWHASH_ELEMENT>(nameof(HWHASH_ELEMENT.ID));
+    private static readonly int OFF_VALUE = (int)Marshal.OffsetOf<HWHASH_ELEMENT>(nameof(HWHASH_ELEMENT.Value));
+    private static readonly int SIZE_ELEMENT = Marshal.SizeOf<HWHASH_ELEMENT>(), SIZE_HEADER = Marshal.SizeOf<HWHASH_HEADER>();
+
+    private static readonly object _sync = new();
+    private static readonly object _statsLock = new();
 
     private static MemoryMappedFile? _memMap;
-    private static HWINFO_MEM _memRegion;
+    private static MemoryMappedViewAccessor? _view;
+    private static unsafe byte* _base;
+    private static HWINFO_MEM _layout;
     private static HWHashStats _stats;
-    private static int _indexOrder;
+    private static long _pollTime;
+    private static bool _lastReadOk;
     private static CancellationTokenSource? _pollingCTS;
     private static Task? _pollingTask;
-    private static bool? _hwInfoRunningCache;
-    private static HWHASH_HEADER[]? _headers;
+    private static HWHASH_HEADER[] _headers = [];
+    private static int _sensorSetVersion;
+    private static RelevantCache? _relevant;
 
     public static readonly ConcurrentDictionary<ulong, HWINFO_HASH> Sensors = new();
     public static readonly ConcurrentDictionary<ulong, HWINFO_HASH_MINI> SensorsMini = new();
@@ -62,6 +75,15 @@ public static class HWHash
     [Obsolete("HighPrecision has no effect on modern Windows. Kept for backwards compatibility only.")]
     public static bool HighPrecision { get; set; }
 
+    /// <summary>Raised on the polling thread after every successful read cycle.</summary>
+    public static event Action? Updated;
+
+    /// <summary>True while HWiNFO's shared memory is open and active.</summary>
+    public static unsafe bool IsConnected => _base != null;
+
+    /// <summary>HWiNFO's own timestamp of its last sensor poll. Stops moving when the data goes stale.</summary>
+    public static DateTimeOffset LastUpdate => DateTimeOffset.FromUnixTimeSeconds(Interlocked.Read(ref _pollTime));
+
     private static int _delayMs = 1000;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -74,206 +96,282 @@ public static class HWHash
 
     public static bool Launch()
     {
-        if (!IsHWInfoRunning())
+        lock (_sync)
         {
-            Debug.WriteLine("[HWHash] HWiNFO process not found.");
-            return false;
+            if (_pollingCTS != null) return true;
+
+            ReadSensors();
+            if (!_lastReadOk)
+            {
+                Debug.WriteLine("[HWHash] HWiNFO shared memory not available.");
+                return false;
+            }
+
+            _pollingCTS = new CancellationTokenSource();
+            _pollingTask = PollSensorsAsync(_pollingCTS.Token);
+            return true;
         }
-
-        if (!ReadMem())
-        {
-            Debug.WriteLine("[HWHash] Failed to read shared memory.");
-            return false;
-        }
-
-        BuildHeaders();
-        ReadSensors();
-
-        _pollingCTS = new CancellationTokenSource();
-        _pollingTask = PollSensorsAsync(_pollingCTS.Token);
-
-        return true;
     }
 
     public static void Stop()
     {
-        _pollingCTS?.Cancel();
-        _pollingCTS = null;
+        lock (_sync)
+        {
+            _pollingCTS?.Cancel();
+            _pollingCTS = null;
+        }
     }
 
     public static async Task StopAsync()
     {
-        _pollingCTS?.Cancel();
-        if (_pollingTask != null) await _pollingTask;
-        _pollingCTS = null;
+        Task? task;
+        lock (_sync)
+        {
+            _pollingCTS?.Cancel();
+            _pollingCTS = null;
+            task = _pollingTask;
+        }
+        if (task != null) await task;
     }
 
     public static string GetJsonString(bool order = false) =>
-        order ? JsonSerializer.Serialize(GetOrderedList()) :
-                JsonSerializer.Serialize(Sensors);
+        order ? JsonSerializer.Serialize(GetOrderedList(), HWHashJsonContext.Default.ListHWINFO_HASH) :
+                JsonSerializer.Serialize(Sensors, HWHashJsonContext.Default.ConcurrentDictionaryUInt64HWINFO_HASH);
 
     public static string GetJsonStringMini(bool order = false) =>
-        order ? JsonSerializer.Serialize(GetOrderedListMini()) :
-                JsonSerializer.Serialize(SensorsMini);
+        order ? JsonSerializer.Serialize(GetOrderedListMini(), HWHashJsonContext.Default.ListHWINFO_HASH_MINI) :
+                JsonSerializer.Serialize(SensorsMini, HWHashJsonContext.Default.ConcurrentDictionaryUInt64HWINFO_HASH_MINI);
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static HWHashStats GetHWHashStats() => _stats;
-
-    public static List<HWINFO_HASH> GetOrderedList()
+    public static HWHashStats GetHWHashStats()
     {
-        var list = new List<HWINFO_HASH>(Sensors.Values);
-        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
-        return list;
+        lock (_statsLock) return _stats;
     }
 
-    public static List<HWINFO_HASH_MINI> GetOrderedListMini()
+    public static List<HWINFO_HASH> GetOrderedList() => Ordered(Sensors, static s => s.IndexOrder);
+
+    public static List<HWINFO_HASH_MINI> GetOrderedListMini() => Ordered(SensorsMini, static s => s.IndexOrder);
+
+    // IndexOrder is the dense slot in HWiNFO's reading array, so each value drops straight into place: O(n), no sort.
+    // Falls back to a sort if the orders are ever not a clean 0..n-1 permutation.
+    private static List<T> Ordered<T>(ConcurrentDictionary<ulong, T> source, Func<T, int> order)
     {
-        var list = new List<HWINFO_HASH_MINI>(SensorsMini.Values);
-        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
+        var list = new List<T>(source.Count);
+        CollectionsMarshal.SetCount(list, list.Capacity);
+        var span = CollectionsMarshal.AsSpan(list);
+        var placed = new bool[span.Length];
+        bool dense = true;
+        int n = 0;
+
+        foreach (var kv in source)
+        {
+            int i = order(kv.Value);
+            if (n == span.Length || (uint)i >= (uint)span.Length || placed[i]) { dense = false; break; }
+            span[i] = kv.Value;
+            placed[i] = true;
+            n++;
+        }
+
+        if (dense && n == span.Length) return list;
+
+        list.Clear();
+        foreach (var kv in source) list.Add(kv.Value);
+        list.Sort((a, b) => order(a).CompareTo(order(b)));
         return list;
     }
 
     public static List<HWINFO_HASH> GetRelevantList()
     {
-        var list = new List<HWINFO_HASH>(RelevantSensorsSet.Count);
+        // versioned so a build that races with a sensor-set change can never be cached as current
+        int version = Volatile.Read(ref _sensorSetVersion);
+        var cache = _relevant;
+        if (cache == null || cache.Version != version)
+            _relevant = cache = new RelevantCache(version, BuildRelevant());
 
-        foreach (var sensor in Sensors.Values)
+        var list = new List<HWINFO_HASH>(cache.Items.Length);
+
+        foreach (var (uid, clean) in cache.Items)
         {
-            if (RelevantSensorsSet.Contains(sensor.NameDefault))
-            {
-                string clean = sensor.NameDefault.Replace(" ", "").Replace("/", "") + sensor.SensorIndex;
+            if (Sensors.TryGetValue(uid, out var sensor))
                 list.Add(sensor with { NameCustom = clean });
-            }
         }
 
-        list.Sort((a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
         return list;
+    }
+
+    private static (ulong, string)[] BuildRelevant()
+    {
+        var found = new List<HWINFO_HASH>();
+
+        foreach (var kv in Sensors)
+        {
+            if (RelevantSensorsSet.Contains(kv.Value.NameDefault))
+                found.Add(kv.Value);
+        }
+
+        found.Sort(static (a, b) => a.IndexOrder.CompareTo(b.IndexOrder));
+        return found.Select(s => (s.UniqueID, s.NameDefault.Replace(" ", "").Replace("/", "") + s.SensorIndex)).ToArray();
     }
 
     private static async Task PollSensorsAsync(CancellationToken token)
     {
-        while (!token.IsCancellationRequested)
-        {
-            long start = Stopwatch.GetTimestamp();
-            ReadSensors();
-            long elapsed = Stopwatch.GetTimestamp() - start;
-
-            double ms = elapsed * 1000.0 / Stopwatch.Frequency;
-            _stats = new HWHashStats(ms, elapsed, _stats.TotalCategories, _stats.TotalEntries);
-
-            try { await Task.Delay(_delayMs, token); }
-            catch (TaskCanceledException) { break; }
-        }
-    }
-
-    private static void ReadSensors()
-    {
-        uint totalEntries = _memRegion.TOTAL_ReadingElements;
-        _stats = new HWHashStats(_stats.CollectionTime, _stats.CollectionTimeTicks, _stats.TotalCategories, totalEntries);
-
-        long totalSize = totalEntries * _memRegion.SIZE_Reading;
-        byte[] pooledBuffer = ArrayPool<byte>.Shared.Rent((int)totalSize);
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(_delayMs));
 
         try
         {
-            using var accessor = _memMap!.CreateViewAccessor(
-                            _memRegion.OFFSET_Reading,
-                totalSize,
-                MemoryMappedFileAccess.Read
-            );
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                if (timer.Period.TotalMilliseconds != _delayMs)
+                    timer.Period = TimeSpan.FromMilliseconds(_delayMs);
 
-            accessor.ReadArray(0, pooledBuffer, 0, (int)totalSize);
+                long start = Stopwatch.GetTimestamp();
+                ReadSensors();
+                long elapsed = Stopwatch.GetTimestamp() - start;
 
-            GCHandle handle = GCHandle.Alloc(pooledBuffer, GCHandleType.Pinned);
-            IntPtr basePtr = handle.AddrOfPinnedObject();
+                double ms = elapsed * 1000.0 / Stopwatch.Frequency;
+                lock (_statsLock) _stats = _stats with { CollectionTime = ms, CollectionTimeTicks = elapsed };
+
+                if (_lastReadOk && Updated is { } handler)
+                {
+                    try { handler(); }
+                    catch (Exception ex) { Debug.WriteLine($"[HWHash] Updated handler threw: {ex.Message}"); }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private static unsafe void ReadSensors()
+    {
+        lock (_sync)
+        {
+            _lastReadOk = false;
 
             try
             {
-                int stride = (int)_memRegion.SIZE_Reading;
-                int limit = (int)totalEntries;
+                if (_base == null && !Connect()) return;
 
-                // Unrolled loop for better ILP
-                int i = 0;
-                int unrolledLimit = limit - (limit % 4);
-
-                for (; i < unrolledLimit; i += 4)
+                var mem = Unsafe.ReadUnaligned<HWINFO_MEM>(_base);
+                if (mem.Sig != SIG_ACTIVE || !FitsView(mem))
                 {
-                    ReadSensorElement(IntPtr.Add(basePtr, i * stride));
-                    ReadSensorElement(IntPtr.Add(basePtr, (i + 1) * stride));
-                    ReadSensorElement(IntPtr.Add(basePtr, (i + 2) * stride));
-                    ReadSensorElement(IntPtr.Add(basePtr, (i + 3) * stride));
+                    // HWiNFO exited or restarted: drop the handle so it can recreate the section, retry next cycle
+                    Debug.WriteLine("[HWHash] Shared memory went inactive, reconnecting.");
+                    Disconnect();
+                    if (!Connect()) return;
+                    mem = Unsafe.ReadUnaligned<HWINFO_MEM>(_base);
+                    if (!FitsView(mem)) return;
                 }
 
-                for (; i < limit; i++)
+                bool rebuild = !SameLayout(mem, _layout);
+                if (rebuild)
                 {
-                    ReadSensorElement(IntPtr.Add(basePtr, i * stride));
+                    BuildHeaders(mem);
+                    _layout = mem;
                 }
+
+                int count = (int)mem.TOTAL_ReadingElements;
+                int stride = (int)mem.SIZE_Reading;
+                byte* readings = _base + mem.OFFSET_Reading;
+                HashSet<ulong>? seen = rebuild ? new HashSet<ulong>(count) : null;
+
+                for (int i = 0; i < count; i++)
+                {
+                    byte* e = readings + (long)i * stride;
+                    ulong uid = MakeUID(Unsafe.ReadUnaligned<uint>(e + OFF_ID), Unsafe.ReadUnaligned<uint>(e + OFF_INDEX));
+
+                    if (!rebuild && Sensors.TryGetValue(uid, out var existing))
+                    {
+                        double* v = (double*)(e + OFF_VALUE);
+                        UpdateValues(uid, existing,
+                            Unsafe.ReadUnaligned<double>(v), Unsafe.ReadUnaligned<double>(v + 1),
+                            Unsafe.ReadUnaligned<double>(v + 2), Unsafe.ReadUnaligned<double>(v + 3));
+                    }
+                    else
+                    {
+                        AddOrReplace(uid, e, i);
+                        seen?.Add(uid);
+                    }
+                }
+
+                if (seen != null)
+                {
+                    foreach (var uid in Sensors.Keys)
+                    {
+                        if (!seen.Contains(uid))
+                        {
+                            Sensors.TryRemove(uid, out _);
+                            SensorsMini.TryRemove(uid, out _);
+                        }
+                    }
+                }
+
+                lock (_statsLock) _stats = _stats with { TotalCategories = mem.SS_SensorElements, TotalEntries = mem.TOTAL_ReadingElements };
+                Interlocked.Exchange(ref _pollTime, mem.PollTime);
+                _lastReadOk = true;
             }
-            finally
+            catch (Exception ex)
             {
-                handle.Free();
+                Debug.WriteLine($"[HWHash] Error reading sensors: {ex.Message}");
             }
         }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[HWHash] Error reading sensors: {ex.Message}");
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pooledBuffer);
-        }
     }
 
+    // Hot path. Skips the write (and the dictionary node allocation) when nothing changed;
+    // the skip condition guarantees the stored record is identical to what a write would produce.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReadSensorElement(IntPtr ptr)
+    private static void UpdateValues(ulong uid, in HWINFO_HASH existing, double now, double min, double max, double avg)
     {
-        var reading = Marshal.PtrToStructure<HWHASH_ELEMENT>(ptr);
-        UpdateSensorData(reading);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void UpdateSensorData(HWHASH_ELEMENT r)
-    {
-        ulong uid = MakeUID(r.ID, r.Index);
-
-        if (!Sensors.TryGetValue(uid, out var existing))
-        {
-            int order = Interlocked.Increment(ref _indexOrder) - 1;
-            string typeStr = TypeToString(r.SENSOR_TYPE);
-
-            var header = _headers![r.Index];
-            ulong parentUid = MakeUID(header.ID, header.Instance);
-
-            var mini = new HWINFO_HASH_MINI(uid, r.NameCustom, r.Unit, r.Value, r.Value, order, typeStr);
-            var full = new HWINFO_HASH(
-                typeStr, r.Index, r.ID, uid,
-                r.NameDefault, r.NameCustom, r.Unit,
-                r.Value, r.ValueMin, r.ValueMax, r.ValueAvg, r.Value,
-                header.NameDefault, header.NameCustom,
-                header.ID, header.Instance, parentUid, order
-            );
-
-            Sensors.TryAdd(uid, full);
-            SensorsMini.TryAdd(uid, mini);
-        }
-        else
+        if (!Same(existing.ValueNow, now) || !Same(existing.ValuePrev, existing.ValueNow) ||
+            !Same(existing.ValueMin, min) || !Same(existing.ValueMax, max) || !Same(existing.ValueAvg, avg))
         {
             Sensors[uid] = existing with
             {
                 ValuePrev = existing.ValueNow,
-                ValueNow = r.Value,
-                ValueMin = r.ValueMin,
-                ValueMax = r.ValueMax,
-                ValueAvg = r.ValueAvg
+                ValueNow = now,
+                ValueMin = min,
+                ValueMax = max,
+                ValueAvg = avg
             };
+        }
 
-            SensorsMini[uid] = SensorsMini[uid] with
+        if (SensorsMini.TryGetValue(uid, out var mini) &&
+            (!Same(mini.ValueNow, now) || !Same(mini.ValuePrev, mini.ValueNow)))
+        {
+            SensorsMini[uid] = mini with
             {
-                ValuePrev = SensorsMini[uid].ValueNow,
-                ValueNow = r.Value
+                ValuePrev = mini.ValueNow,
+                ValueNow = now
             };
         }
     }
+
+    // Cold path: first sighting or layout change. Full parse, names refreshed, ValuePrev carried over.
+    private static unsafe void AddOrReplace(ulong uid, byte* e, int order)
+    {
+        var r = Marshal.PtrToStructure<HWHASH_ELEMENT>((IntPtr)e);
+        string typeStr = TypeToString(r.SENSOR_TYPE);
+
+        var header = r.Index < _headers.Length ? _headers[r.Index] : default;
+        ulong parentUid = MakeUID(header.ID, header.Instance);
+
+        double prev = Sensors.TryGetValue(uid, out var old) ? old.ValueNow : r.Value;
+        double prevMini = SensorsMini.TryGetValue(uid, out var oldMini) ? oldMini.ValueNow : r.Value;
+
+        Sensors[uid] = new HWINFO_HASH(
+            typeStr, r.Index, r.ID, uid,
+            r.NameDefault, r.NameCustom, r.Unit,
+            r.Value, r.ValueMin, r.ValueMax, r.ValueAvg, prev,
+            header.NameDefault ?? "", header.NameCustom ?? "",
+            header.ID, header.Instance, parentUid, order
+        );
+        SensorsMini[uid] = new HWINFO_HASH_MINI(uid, r.NameCustom, r.Unit, prevMini, r.Value, order, typeStr);
+
+        Interlocked.Increment(ref _sensorSetVersion);
+    }
+
+    private sealed record RelevantCache(int Version, (ulong UID, string CleanName)[] Items);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool Same(double a, double b) => BitConverter.DoubleToInt64Bits(a) == BitConverter.DoubleToInt64Bits(b);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static string TypeToString(SENSOR_READING_TYPE t) => t switch
@@ -289,102 +387,67 @@ public static class HWHash
         _ => "None"
     };
 
-    private static bool ReadMem()
+    // One persistent view for the lifetime of the connection instead of a map/copy per poll.
+    private static unsafe bool Connect()
     {
         try
         {
             _memMap = MemoryMappedFile.OpenExisting(SHARED_MEM_PATH, MemoryMappedFileRights.Read);
+            _view = _memMap.CreateViewAccessor(0L, 0L, MemoryMappedFileAccess.Read);
 
-            using var accessor = _memMap.CreateViewAccessor(
-                0L,
-                Marshal.SizeOf<HWINFO_MEM>(),
-                MemoryMappedFileAccess.Read
-            );
+            byte* ptr = null;
+            _view.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+            _base = ptr + _view.PointerOffset;
 
-            accessor.Read(0L, out _memRegion);
-            return true;
+            if (Unsafe.ReadUnaligned<HWINFO_MEM>(_base).Sig == SIG_ACTIVE) return true;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[HWHash] Error reading shared memory: {ex.Message}");
-            return false;
+            Debug.WriteLine($"[HWHash] Error opening shared memory: {ex.Message}");
         }
+
+        Disconnect();
+        return false;
     }
 
-    private static void BuildHeaders()
+    private static unsafe void Disconnect()
     {
-        uint count = _memRegion.SS_SensorElements;
-        _headers = new HWHASH_HEADER[count];
-
-        long totalSize = count * _memRegion.SS_SIZE;
-        byte[] pooledBuffer = ArrayPool<byte>.Shared.Rent((int)totalSize);
-
-        try
+        if (_base != null)
         {
-            using var accessor = _memMap!.CreateViewAccessor(
-                _memRegion.SS_OFFSET,
-                totalSize,
-                MemoryMappedFileAccess.Read
-            );
-
-            accessor.ReadArray(0, pooledBuffer, 0, (int)totalSize);
-
-            GCHandle handle = GCHandle.Alloc(pooledBuffer, GCHandleType.Pinned);
-            IntPtr basePtr = handle.AddrOfPinnedObject();
-
-            try
-            {
-                int stride = (int)_memRegion.SS_SIZE;
-
-                for (uint i = 0; i < count; i++)
-                {
-                    IntPtr ptr = IntPtr.Add(basePtr, (int)(i * stride));
-                    _headers[i] = Marshal.PtrToStructure<HWHASH_HEADER>(ptr);
-                }
-            }
-            finally
-            {
-                handle.Free();
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[HWHash] Error building headers: {ex.Message}");
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pooledBuffer);
+            _view!.SafeMemoryMappedViewHandle.ReleasePointer();
+            _base = null;
         }
 
-        _stats = new HWHashStats(0, 0, count, 0);
+        _view?.Dispose();
+        _view = null;
+        _memMap?.Dispose();
+        _memMap = null;
+        _layout = default;
+    }
+
+    private static bool FitsView(in HWINFO_MEM m) =>
+        (ulong)m.SS_OFFSET + (ulong)m.SS_SIZE * m.SS_SensorElements <= (ulong)_view!.Capacity &&
+        (ulong)m.OFFSET_Reading + (ulong)m.SIZE_Reading * m.TOTAL_ReadingElements <= (ulong)_view.Capacity &&
+        m.SIZE_Reading >= SIZE_ELEMENT && m.SS_SIZE >= SIZE_HEADER;
+
+    private static bool SameLayout(in HWINFO_MEM a, in HWINFO_MEM b) =>
+        a.SS_OFFSET == b.SS_OFFSET && a.SS_SIZE == b.SS_SIZE && a.SS_SensorElements == b.SS_SensorElements &&
+        a.OFFSET_Reading == b.OFFSET_Reading && a.SIZE_Reading == b.SIZE_Reading &&
+        a.TOTAL_ReadingElements == b.TOTAL_ReadingElements;
+
+    private static unsafe void BuildHeaders(in HWINFO_MEM mem)
+    {
+        var headers = new HWHASH_HEADER[mem.SS_SensorElements];
+        byte* basePtr = _base + mem.SS_OFFSET;
+
+        for (int i = 0; i < headers.Length; i++)
+            headers[i] = Marshal.PtrToStructure<HWHASH_HEADER>((IntPtr)(basePtr + (long)i * mem.SS_SIZE));
+
+        _headers = headers;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static ulong MakeUID(uint a, uint b) => ((ulong)a << 32) | b;
-
-    private static bool IsHWInfoRunning()
-    {
-        if (_hwInfoRunningCache.HasValue)
-            return _hwInfoRunningCache.Value;
-
-        var processes = Process.GetProcesses();
-
-        foreach (var proc in processes)
-        {
-            var name = proc.ProcessName;
-
-            if (name.Length >= 6 &&
-                (name.StartsWith("hwinfo", StringComparison.OrdinalIgnoreCase) ||
-                 name.StartsWith("HWiNFO", StringComparison.Ordinal)))
-            {
-                _hwInfoRunningCache = true;
-                return true;
-            }
-        }
-
-        _hwInfoRunningCache = false;
-        return false;
-    }
 
     public readonly record struct HWHashStats(
         double CollectionTime,
@@ -481,3 +544,10 @@ public static class HWHash
         SENSOR_TYPE_OTHER,
     }
 }
+
+// Source-generated serializers: no runtime reflection, trim/AOT friendly, byte-identical output.
+[JsonSerializable(typeof(List<HWHash.HWINFO_HASH>))]
+[JsonSerializable(typeof(List<HWHash.HWINFO_HASH_MINI>))]
+[JsonSerializable(typeof(ConcurrentDictionary<ulong, HWHash.HWINFO_HASH>))]
+[JsonSerializable(typeof(ConcurrentDictionary<ulong, HWHash.HWINFO_HASH_MINI>))]
+internal partial class HWHashJsonContext : JsonSerializerContext { }
