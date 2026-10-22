@@ -35,6 +35,10 @@ public static class HWHash
     private const int SENSOR_STRING_LEN = 128, READING_STRING_LEN = 16;
     private const uint SIG_ACTIVE = 0x53695748; // "HWiS", HWiNFO writes "DEAD" on exit
 
+    // A crashed HWiNFO never writes "DEAD", and our open handle keeps its dead section alive under the name,
+    // so a restarted HWiNFO can't publish. If its poll timestamp stops moving this long, let go and reopen.
+    private static readonly TimeSpan STALE_AFTER = TimeSpan.FromSeconds(10);
+
     // native offsets inside a reading element, values are 4 consecutive doubles: now, min, max, avg
     private static readonly int OFF_INDEX = (int)Marshal.OffsetOf<HWHASH_ELEMENT>(nameof(HWHASH_ELEMENT.Index));
     private static readonly int OFF_ID = (int)Marshal.OffsetOf<HWHASH_ELEMENT>(nameof(HWHASH_ELEMENT.ID));
@@ -50,6 +54,8 @@ public static class HWHash
     private static HWINFO_MEM _layout;
     private static HWHashStats _stats;
     private static long _pollTime;
+    private static long _lastPollTime;
+    private static long _lastPollTimeChange;
     private static bool _lastReadOk;
     private static CancellationTokenSource? _pollingCTS;
     private static Task? _pollingTask;
@@ -261,6 +267,21 @@ public static class HWHash
                     if (!FitsView(mem)) return;
                 }
 
+                long now = Stopwatch.GetTimestamp();
+                if (mem.PollTime != _lastPollTime)
+                {
+                    _lastPollTime = mem.PollTime;
+                    _lastPollTimeChange = now;
+                }
+                else if (Stopwatch.GetElapsedTime(_lastPollTimeChange, now) > STALE_AFTER)
+                {
+                    Debug.WriteLine("[HWHash] HWiNFO stopped updating, reopening shared memory.");
+                    Disconnect();
+                    if (!Connect()) return;
+                    mem = Unsafe.ReadUnaligned<HWINFO_MEM>(_base);
+                    if (!FitsView(mem)) return;
+                }
+
                 bool rebuild = !SameLayout(mem, _layout);
                 if (rebuild)
                 {
@@ -399,7 +420,14 @@ public static class HWHash
             _view.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
             _base = ptr + _view.PointerOffset;
 
-            if (Unsafe.ReadUnaligned<HWINFO_MEM>(_base).Sig == SIG_ACTIVE) return true;
+            var mem = Unsafe.ReadUnaligned<HWINFO_MEM>(_base);
+            if (mem.Sig == SIG_ACTIVE)
+            {
+                // a fresh connection gets a full stale window before it can be judged frozen
+                _lastPollTime = mem.PollTime;
+                _lastPollTimeChange = Stopwatch.GetTimestamp();
+                return true;
+            }
         }
         catch (Exception ex)
         {

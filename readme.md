@@ -270,7 +270,7 @@ Same API. Nothing removed, nothing renamed, your code keeps working.
 - Read cycle ~47x faster, 295µs -> 6µs on 649 sensors, zero allocations when values don't change
 - Worst case, every sensor changed: still 5.3x faster with half the garbage
 - `GetOrderedList()` 2.7x, `GetRelevantList()` 25x, JSON up to 1.4x faster
-- Survives HWiNFO restarts, reconnects on its own
+- Survives HWiNFO restarts and crashes, reconnects on its own. A crash is caught in 10s, `IsConnected` goes false instead of serving frozen data
 - Picks up sensors added/removed in HWiNFO, no relaunch
 - `Launch()` before HWiNFO was open could never succeed afterwards. Fixed.
 - Calling `Launch()` twice spawned two pollers. Fixed.
