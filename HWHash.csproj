@@ -6,7 +6,7 @@
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 	<SignAssembly>True</SignAssembly>
     <Title>HWHash - HWInfo data to Dictionary</Title>
-    <Authors>$(AssemblyName) - DLain</Authors>
+    <Authors>Magnus Leatti</Authors>
     <Description>HWHash is a static class that grabs HWInfo sensor information and saves it to a Dictionary so it can be easily read and upload to InfluxDB or any other application you may deem useful.</Description>
     <RepositoryType>git</RepositoryType>
     <PackageTags>hwhash,hwinfo,hwinfo dictionary,hwinfo shared memory, metrics, hardware metrics,</PackageTags>
