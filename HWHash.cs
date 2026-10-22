@@ -6,7 +6,7 @@
  *
  * Description: HWiNFO Shared Memory Interface
  *
- * Author: D. Leatti (Forbannet)
+ * Author: Magnus Leatti (Forbannet)
  * URL: https://kernelriot.com
  * Github: /layer07
  *
