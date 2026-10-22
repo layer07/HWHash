@@ -29,6 +29,11 @@ List<HWINFO_HASH> relevant = HWHash.GetRelevantList();
 string json = HWHash.GetJsonString(true);
 string jsonMini = HWHash.GetJsonStringMini(true);
 
+// 1.6.0+: get pushed instead of polling
+HWHash.Updated += () => Console.WriteLine(HWHash.GetJsonStringMini(true));
+bool live = HWHash.IsConnected;
+DateTimeOffset last = HWHash.LastUpdate; // stops moving when data goes stale
+
 // stop polling
 HWHash.Stop();
 await HWHash.StopAsync(); // graceful, awaits last cycle
