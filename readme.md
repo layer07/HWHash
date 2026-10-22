@@ -154,7 +154,7 @@ PowerShell Integration
 In case you want to invoke **HWHash** from **PowerShell**, it is possible to do so, follow the steps below:
 
  - Ensure you have **PowerShell 7.0 or newer** [\[Here\]](https://github.com/PowerShell/PowerShell/releases/download/v7.4.0/PowerShell-7.4.0-win-x64.msi)
- - Download the latest release of **HWHash** DLL [\[Here\]](https://github.com/layer07/HWHash/releases/download/release/HWHash.dll)
+ - Download the latest release of **HWHash** DLL [\[Here\]](https://github.com/layer07/HWHash/releases/latest/download/HWHash.dll)
  - Create a test script with the code below
 
 ```powershell
